@@ -91,6 +91,62 @@ judge:
 
 ---
 
+## 推理工作流详解
+
+调用 `python infer.py` 后，内部执行链路如下：
+
+```
+infer.py
+│
+├─ 1. 读取 config.yaml，加载 benchmark JSONL
+│
+├─ 2. 初始化组件
+│     ├─ VLLMModel     ← 加载本地模型（vLLM）
+│     ├─ JinaSearch    ← 初始化 Jina Search 客户端
+│     └─ SearchWorkflow← 注入上面两个组件
+│
+└─ 3. 遍历每条 question，调用 SearchWorkflow.run(query)
+       │
+       ├─ [Round 1] 初始分析
+       │     ├─ 将 question 拼入 BASE_PROMPT，发给模型
+       │     ├─ 解析模型输出中的 <search>...</search> 标签，提取待搜索词
+       │     ├─ 若无 <search>，说明无需搜索 → 直接返回模型答案，结束
+       │     ├─ 调用 MemoryManager.initialize() 创建记忆板（含用户目标、任务规划、待搜索队列）
+       │     └─ 调用过滤器（模型二次判断）筛掉与目标无关的查询，剩余入队
+       │
+       ├─ [Round 2~N] 搜索循环（直到队列为空或达到 max_rounds）
+       │     ├─ 从队列取出一条查询词
+       │     ├─ 调用 JinaSearch.search() → 请求 Jina Search API，返回最多 5 条结果
+       │     ├─ 过滤器再次判断本条查询是否仍与目标相关
+       │     │     └─ 不相关 → 跳过，不调用模型，不更新记忆板
+       │     ├─ 将搜索结果格式化，拼入 ANALYSIS_PROMPT，发给模型分析
+       │     ├─ 解析模型输出：
+       │     │     ├─ 有新 <search> → 追加到待处理列表
+       │     │     └─ 无 <search>  → 模型认为信息已足够，本轮即为最终答案
+       │     ├─ 合并（旧队列 + 新查询），整体过滤一次，重建队列
+       │     └─ 调用 MemoryManager.update() 将本轮搜索结果和新队列写入记忆板
+       │
+       └─ [Final] 强制生成最终答案（队列耗尽或达到 max_rounds 时触发）
+             ├─ 将完整记忆板拼入 FINAL_ANSWER_PROMPT，发给模型汇总
+             └─ 清理 <think>/<search> 标签，返回干净的最终答案
+
+infer.py 收到 SearchWorkflow.run() 的返回值后：
+  └─ 将 {question, gold_answer, predicted_answer, used_sources, final_memory, num_rounds} 写入 JSONL
+```
+
+**关键数据流：**
+
+```
+question
+  └→ [模型] 初始分析 → <search> 列表
+       └→ [记忆板] 初始化
+            └→ [过滤器] 筛选查询 → 队列
+                 └→ 循环：[Jina API] 搜索 → [模型] 分析 → 更新队列 + 记忆板
+                      └→ [模型] 最终汇总 → answer
+```
+
+---
+
 ## 使用方法
 
 所有命令均在 **`search_agent/` 目录内**运行。
