@@ -85,7 +85,7 @@ CUDA_VISIBLE_DEVICES="$GPU" vllm serve "$MODEL_PATH" \
     --host 0.0.0.0 \
     --port "$PORT" \
     --tensor-parallel-size "$TP" \
-    --disable-log-requests \
+    --no-enable-log-requests \
     $EXTRA_ARGS &
 
 VLLM_PID=$!

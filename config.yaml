@@ -1,5 +1,5 @@
 model:
-  local_model_path: "/root/autodl-tmp/Qwen3-8B"
+  local_model_path: "/root/autodl-tmp/models/qwen-8b-instruct"
   gpu_memory_utilization: 0.85
   max_model_len: 8192
   temperature: 0.7
