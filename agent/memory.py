@@ -7,9 +7,9 @@ and tracks: user goal, task plan, collected information, and pending searches.
 
 import re
 
-from ..models.base import BaseLLM
-from ..utils import load_config
-from .prompts import (
+from models.base import BaseLLM
+from utils import load_config
+from agent.prompts import (
     MEMORY_INIT_PROMPT,
     MEMORY_UPDATE_PROMPT,
     MEMORY_UPDATE_QUEUE_ONLY_PROMPT,

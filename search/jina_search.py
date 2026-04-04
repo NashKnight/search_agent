@@ -4,8 +4,8 @@ Jina Search API implementation.
 
 import requests
 
-from .base import BaseSearch
-from ..utils import load_config
+from search.base import BaseSearch
+from utils import load_config
 
 
 class JinaSearch(BaseSearch):

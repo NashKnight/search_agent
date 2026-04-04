@@ -79,14 +79,14 @@ search:
 
 ## 使用方法
 
-所有命令均在 `search_agent/` 的**父目录**（即 `deep_research/`）下运行。
+所有命令均在 **`search_agent/` 目录内**运行。
 
 ### 单条查询（Python 调用）
 
 ```python
-from search_agent.models.vllm_model import VLLMModel
-from search_agent.search.jina_search import JinaSearch
-from search_agent.search_workflow import SearchWorkflow
+from models.vllm_model import VLLMModel
+from search.jina_search import JinaSearch
+from search_workflow import SearchWorkflow
 
 llm      = VLLMModel()
 searcher = JinaSearch()
@@ -106,43 +106,43 @@ print(result["rounds"])          # 每轮详细 trace
 结果保存至 `search_agent/tests/run_<时间戳>.jsonl`。
 
 ```bash
-python -m search_agent.eval
+python eval.py
 ```
 
 ### 只评测前 N 条
 
 ```bash
-python -m search_agent.eval --limit 10
+python eval.py --limit 10
 ```
 
 ### 跳过前 N 条（断点续评）
 
 ```bash
-python -m search_agent.eval --offset 50 --limit 20
+python eval.py --offset 50 --limit 20
 ```
 
 ### 指定不同的 benchmark 文件
 
 ```bash
-python -m search_agent.eval --benchmark /path/to/other_benchmark.jsonl
+python eval.py --benchmark /path/to/other_benchmark.jsonl
 ```
 
 ### 自定义输出文件路径
 
 ```bash
-python -m search_agent.eval --output search_agent/tests/my_run.jsonl
+python eval.py --output search_agent/tests/my_run.jsonl
 ```
 
 ### 指定不同的配置文件
 
 ```bash
-python -m search_agent.eval --config /path/to/other_config.yaml
+python eval.py --config /path/to/other_config.yaml
 ```
 
 ### 组合参数示例
 
 ```bash
-python -m search_agent.eval \
+python eval.py \
   --config search_agent/config.yaml \
   --benchmark ../benchmark/webwalker/main-00000-of-00001.jsonl \
   --limit 50 \

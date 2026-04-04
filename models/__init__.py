@@ -1,4 +1,4 @@
-from .base import BaseLLM
-from .vllm_model import VLLMModel
+from models.base import BaseLLM
+from models.vllm_model import VLLMModel
 
 __all__ = ["BaseLLM", "VLLMModel"]

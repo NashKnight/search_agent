@@ -1,4 +1,4 @@
-from .memory import MemoryManager
-from .prompts import BASE_PROMPT
+from agent.memory import MemoryManager
+from agent.prompts import BASE_PROMPT
 
 __all__ = ["MemoryManager", "BASE_PROMPT"]

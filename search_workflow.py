@@ -12,16 +12,16 @@ Final    : Generate answer from memory (triggered when queue empties or max_roun
 import re
 from collections import deque
 
-from .agent.memory import MemoryManager
-from .agent.prompts import (
+from agent.memory import MemoryManager
+from agent.prompts import (
     BASE_PROMPT,
     ANALYSIS_PROMPT,
     FILTER_QUERIES_PROMPT,
     FINAL_ANSWER_PROMPT,
 )
-from .models.base import BaseLLM
-from .search.base import BaseSearch
-from .utils import load_config
+from models.base import BaseLLM
+from search.base import BaseSearch
+from utils import load_config
 
 
 # ---------------------------------------------------------------------------

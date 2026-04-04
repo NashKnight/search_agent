@@ -5,8 +5,8 @@ vLLM-backed LLM implementation.
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 
-from .base import BaseLLM
-from ..utils import load_config
+from models.base import BaseLLM
+from utils import load_config
 
 
 class VLLMModel(BaseLLM):

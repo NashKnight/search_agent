@@ -16,10 +16,10 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from .models.vllm_model import VLLMModel
-from .search.jina_search import JinaSearch
-from .search_workflow import SearchWorkflow
-from .utils import load_config
+from models.vllm_model import VLLMModel
+from search.jina_search import JinaSearch
+from search_workflow import SearchWorkflow
+from utils import load_config
 
 
 # ---------------------------------------------------------------------------
