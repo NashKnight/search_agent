@@ -98,3 +98,9 @@ FINAL_ANSWER_PROMPT = (
     "3. Cite sources where relevant\n\n"
     "Begin:"
 )
+
+DIRECT_ANSWER_PROMPT = (
+    "User question: {user_query}"
+    "Answer the user directly and helpfully. Do not mention search or analysis."
+    "Begin:"
+)

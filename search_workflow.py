@@ -18,6 +18,7 @@ from agent.prompts import (
     ANALYSIS_PROMPT,
     FILTER_QUERIES_PROMPT,
     FINAL_ANSWER_PROMPT,
+    DIRECT_ANSWER_PROMPT,
 )
 from models.base import BaseLLM
 from search.base import BaseSearch
@@ -153,19 +154,20 @@ class SearchWorkflow:
         }
 
         if not buffer:
-            log("[No search needed — returning direct answer]")
-            entry["clean"] = _clean_final(clean)
+            log("[No search needed â generating direct answer]")
+            direct_prompt = DIRECT_ANSWER_PROMPT.format(user_query=user_query)
+            _, _, direct_clean = self._llm.generate(direct_prompt, max_new_tokens=self._max_new_tokens)
+            answer = _clean_final(direct_clean)
+            entry["clean"] = answer
             entry["is_final"] = True
             entry["current_queue"] = []
             rounds.append(entry)
             return {
-                "answer": entry["clean"],
+                "answer": answer,
                 "memory": "",
                 "used_sources": used_sources,
                 "rounds": rounds,
             }
-
-        # Init memory, then filter the initial buffer
         memory = memory_mgr.initialize(user_query, buffer)
         log(f"\n[Memory initialized]\n{memory}\n")
 

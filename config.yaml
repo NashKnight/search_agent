@@ -28,7 +28,7 @@ limits:
   max_rounds: 15
 
 eval:
-  benchmark_path: "../benchmark/webwalker/main-00000-of-00001.jsonl"
+  benchmark_path: "/root/autodl-tmp/benchmark/data/main-00000-of-00001.jsonl"
   output_dir: "tests"
   batch_size: 1
 
