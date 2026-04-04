@@ -13,7 +13,7 @@ Usage
 
 import argparse
 import json
-import sys
+import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -42,11 +42,21 @@ def load_benchmark(path: str | Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Trace writer helpers
+# ---------------------------------------------------------------------------
+
+def _make_slug(text: str, max_len: int = 40) -> str:
+    """Turn a question into a safe filename fragment."""
+    slug = re.sub(r"[^\w\u4e00-\u9fff]+", "_", text)
+    return slug[:max_len].strip("_")
+
+
+# ---------------------------------------------------------------------------
 # Single-sample inference
 # ---------------------------------------------------------------------------
 
-def run_single(workflow: SearchWorkflow, record: dict) -> dict:
-    """Run one benchmark record through the workflow and return the result entry."""
+def run_single(workflow: SearchWorkflow, record: dict, trace_path: Path) -> dict:
+    """Run one benchmark record, write full trace to trace_path, return result."""
     question = record["question"]
     gold_answer = record.get("answer", "")
     root_url = record.get("root_url", "")
@@ -55,9 +65,34 @@ def run_single(workflow: SearchWorkflow, record: dict) -> dict:
     if root_url:
         query = f"{question}\n(Reference site: {root_url})"
 
+    # Per-sample trace buffer — thread-safe because it's a local variable
+    trace_lines: list[str] = []
+
+    def log(msg: str = "") -> None:
+        trace_lines.append(str(msg))
+
+    # Write header
+    log("=" * 70)
+    log(f"Question : {question}")
+    if gold_answer:
+        log(f"Answer   : {gold_answer}")
+    if root_url:
+        log(f"Root URL : {root_url}")
+    log("=" * 70)
+    log()
+
     try:
-        result = workflow.run(query)
-        return {
+        result = workflow.run(query, log=log)
+
+        log()
+        log("=" * 70)
+        log(f"[Final answer] {result['answer']}")
+        log(f"[Rounds] {len(result['rounds'])}")
+        log(f"[Sources used] {len(result['used_sources'])}")
+        for url, title in result["used_sources"].items():
+            log(f"  {title}: {url}")
+
+        entry = {
             "question": question,
             "gold_answer": gold_answer,
             "predicted_answer": result["answer"],
@@ -69,8 +104,11 @@ def run_single(workflow: SearchWorkflow, record: dict) -> dict:
             "error": None,
         }
     except Exception as exc:
-        traceback.print_exc()
-        return {
+        tb = traceback.format_exc()
+        log()
+        log(f"[ERROR] {exc}")
+        log(tb)
+        entry = {
             "question": question,
             "gold_answer": gold_answer,
             "predicted_answer": "",
@@ -81,6 +119,13 @@ def run_single(workflow: SearchWorkflow, record: dict) -> dict:
             "info": record.get("info", {}),
             "error": str(exc),
         }
+
+    # Write trace file
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(trace_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(trace_lines))
+
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +159,9 @@ def main():
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"run_{ts}.jsonl"
 
+    # Trace directory: same stem as output file, with _traces suffix
+    traces_dir = output_path.parent / (output_path.stem + "_traces")
+
     # ── Load benchmark ────────────────────────────────────────────────────────
     tqdm.write(f"Loading benchmark: {benchmark_path}")
     records = load_benchmark(benchmark_path)
@@ -130,7 +178,8 @@ def main():
     workflow = SearchWorkflow(llm=llm, searcher=searcher, config=config)
 
     tqdm.write(f"Workers: {args.workers}")
-    tqdm.write(f"Output:  {output_path}\n")
+    tqdm.write(f"Output:  {output_path}")
+    tqdm.write(f"Traces:  {traces_dir}/\n")
 
     # ── Parallel inference ────────────────────────────────────────────────────
     # results_by_idx preserves original ordering regardless of completion order
@@ -138,7 +187,12 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         future_to_idx = {
-            executor.submit(run_single, workflow, record): idx
+            executor.submit(
+                run_single,
+                workflow,
+                record,
+                traces_dir / f"sample_{idx:04d}_{_make_slug(record['question'])}.txt",
+            ): idx
             for idx, record in enumerate(records)
         }
 
@@ -147,7 +201,7 @@ def main():
                 idx = future_to_idx[future]
                 try:
                     result = future.result()
-                except Exception as exc:
+                except Exception as exc:  # should not happen — run_single catches internally
                     record = records[idx]
                     tqdm.write(f"[FATAL] idx={idx} q={record['question'][:60]!r}: {exc}")
                     result = {

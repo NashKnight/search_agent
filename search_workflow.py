@@ -104,7 +104,7 @@ class SearchWorkflow:
         self._max_formatted_len: int = limits.get("max_formatted_sources_len", 4500)
         self._max_sources: int = limits.get("max_sources_per_search", 5)
 
-    def run(self, user_query: str, max_rounds: int | None = None) -> dict:
+    def run(self, user_query: str, max_rounds: int | None = None, log=print) -> dict:
         """Run the full search agent for *user_query*.
 
         Returns a result dict:
@@ -126,8 +126,8 @@ class SearchWorkflow:
         rounds: list[dict] = []
 
         # ── Round 1: initial analysis ─────────────────────────────────────
-        print("=" * 70)
-        print("=== Round 1: Initial analysis ===")
+        log("=" * 70)
+        log("=== Round 1: Initial analysis ===")
 
         init_prompt = (
             f"{BASE_PROMPT}\n\n"
@@ -140,10 +140,10 @@ class SearchWorkflow:
             "Begin:"
         )
         _, raw, clean = self._llm.generate(init_prompt, max_new_tokens=self._max_new_tokens)
-        print(raw)
+        log(raw)
 
         buffer = _extract_search_queries(raw)
-        print(f"\n[Extracted queries] {buffer}")
+        log(f"\n[Extracted queries] {buffer}")
 
         entry: dict = {
             "round": 1,
@@ -153,7 +153,7 @@ class SearchWorkflow:
         }
 
         if not buffer:
-            print("[No search needed — returning direct answer]")
+            log("[No search needed — returning direct answer]")
             entry["clean"] = _clean_final(clean)
             entry["is_final"] = True
             entry["current_queue"] = []
@@ -167,10 +167,10 @@ class SearchWorkflow:
 
         # Init memory, then filter the initial buffer
         memory = memory_mgr.initialize(user_query, buffer)
-        print(f"\n[Memory initialized]\n{memory}\n")
+        log(f"\n[Memory initialized]\n{memory}\n")
 
         filtered = _filter_queries(self._llm, memory, buffer)
-        print(f"[Filtered queries] {filtered}")
+        log(f"[Filtered queries] {filtered}")
 
         for q in filtered:
             if q not in searched_queries:
@@ -187,13 +187,13 @@ class SearchWorkflow:
         # ── Round 2+: search loop ─────────────────────────────────────────
         round_num = 2
         while search_queue and round_num <= max_rounds:
-            print(f"\n{'=' * 70}")
-            print(f"=== Round {round_num} ===")
-            print(f"[Memory]\n{memory[:800]}{'...' if len(memory) > 800 else ''}\n")
+            log(f"\n{'=' * 70}")
+            log(f"=== Round {round_num} ===")
+            log(f"[Memory]\n{memory[:800]}{'...' if len(memory) > 800 else ''}\n")
 
             current_query = search_queue.popleft()
             searched_queries.add(current_query)
-            print(f"[Searching] {current_query}")
+            log(f"[Searching] {current_query}")
 
             result = self._searcher.search(current_query, max_results=self._max_sources)
             round_entry: dict = {
@@ -203,7 +203,7 @@ class SearchWorkflow:
             }
 
             if result.get("error"):
-                print(f"[Search error] {result['error']}")
+                log(f"[Search error] {result['error']}")
                 round_entry["error"] = result["error"]
                 round_entry["current_queue"] = list(search_queue)
                 round_entry["memory"] = memory
@@ -213,14 +213,14 @@ class SearchWorkflow:
 
             sources = result.get("sources", {})
             formatted = _format_sources(sources, used_sources)
-            print(f"[Sources found] {len(sources)}")
+            log(f"[Sources found] {len(sources)}")
 
             # Check if this query is still relevant before analysing
             relevance = _filter_queries(self._llm, memory, [current_query])
             is_relevant = bool(relevance)
 
             if not is_relevant:
-                print("[Skipped — query no longer relevant]")
+                log("[Skipped — query no longer relevant]")
                 round_entry.update({
                     "raw": "[Skipped: irrelevant]",
                     "clean": "",
@@ -235,7 +235,7 @@ class SearchWorkflow:
                 continue
 
             search_history.append({"query": current_query, "results": formatted})
-            print("[Relevant — analysing results]")
+            log("[Relevant — analysing results]")
 
             # Ask LLM to analyse new results against memory
             analysis_prompt = ANALYSIS_PROMPT.format(
@@ -248,14 +248,14 @@ class SearchWorkflow:
                 queue_len=len(search_queue),
             )
             _, raw, clean = self._llm.generate(analysis_prompt, max_new_tokens=self._max_new_tokens)
-            print(f"\n[Model response]\n{raw[:600]}{'...' if len(raw) > 600 else ''}")
+            log(f"\n[Model response]\n{raw}")
 
             round_entry["raw"] = raw
             round_entry["clean"] = clean
             round_entry["formatted_sources"] = formatted[: self._max_formatted_len]
 
             new_queries = _extract_search_queries(raw)
-            print(f"[New queries extracted] {new_queries}")
+            log(f"[New queries extracted] {new_queries}")
 
             # Merge queue + new queries, re-filter everything
             all_pending = list(search_queue) + new_queries
@@ -264,7 +264,7 @@ class SearchWorkflow:
                 search_history, all_pending, last_search_relevant=True
             )
             filtered_all = _filter_queries(self._llm, temp_memory, all_pending)
-            print(f"[Filtered pending] {filtered_all}")
+            log(f"[Filtered pending] {filtered_all}")
 
             search_queue.clear()
             for q in filtered_all:
@@ -289,8 +289,8 @@ class SearchWorkflow:
             if not search_queue and not new_queries:
                 round_entry["is_final"] = True
                 round_entry["clean"] = _clean_final(clean)
-                print("\n[Queue empty — marking as final answer]")
-                print(round_entry["clean"])
+                log("\n[Queue empty — marking as final answer]")
+                log(round_entry["clean"])
                 return {
                     "answer": round_entry["clean"],
                     "memory": memory,
@@ -301,8 +301,8 @@ class SearchWorkflow:
             round_num += 1
 
         # ── Forced final answer generation ────────────────────────────────
-        print(f"\n{'=' * 70}")
-        print("=== Final answer generation ===")
+        log(f"\n{'=' * 70}")
+        log("=== Final answer generation ===")
         memory = memory_mgr.get()
         final_prompt = FINAL_ANSWER_PROMPT.format(
             memory=memory, user_query=user_query
@@ -311,7 +311,7 @@ class SearchWorkflow:
             final_prompt, max_new_tokens=self._max_final_tokens
         )
         answer = _clean_final(clean_final)
-        print(answer)
+        log(answer)
 
         rounds.append({
             "round": round_num,
