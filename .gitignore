@@ -6,7 +6,6 @@ __pycache__/
 dist/
 build/
 .DS_Store
-tests/*.jsonl
-tests/run_*
+tests/*
 logs/
 !tests/smoke_test.jsonl
