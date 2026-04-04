@@ -27,3 +27,11 @@ eval:
   benchmark_path: "../benchmark/webwalker/main-00000-of-00001.jsonl"
   output_dir: "tests"
   batch_size: 1
+
+judge:
+  api_url: "https://api.openai.com/v1"   # any OpenAI-compatible endpoint
+  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"      # your API key
+  model: "gpt-4o"                         # judge model name
+  temperature: 0.0
+  timeout: 30
+  max_retries: 3

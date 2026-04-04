@@ -1,32 +1,124 @@
 """
-Benchmark evaluation script.
+Evaluation script — reads infer.py output and scores predictions with a judge model.
 
-Loads the WebWalker JSONL benchmark, runs each question through the search
-agent, and writes results to tests/.
+The judge is an OpenAI-compatible chat API (GPT-4o, Qwen, etc.) configured in
+config.yaml under the `judge` section. It determines whether each predicted
+answer is correct relative to the gold answer, then reports accuracy.
 
 Usage
 -----
-    python eval.py [--config config.yaml] [--limit N] [--offset N] [--output tests/run_NAME.jsonl]
+    python eval.py --input tests/run_20240101_120000.jsonl
+    python eval.py --input tests/run_*.jsonl --output tests/eval_result.json
+    python eval.py --input tests/run.jsonl --config config.yaml --concurrency 8
 """
 
 import argparse
 import json
-import sys
-import traceback
-from datetime import datetime
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from models.vllm_model import VLLMModel
-from search.jina_search import JinaSearch
-from search_workflow import SearchWorkflow
+import requests
+
 from utils import load_config
 
 
 # ---------------------------------------------------------------------------
-# Benchmark loader
+# Judge prompt
 # ---------------------------------------------------------------------------
 
-def load_benchmark(path: str | Path) -> list[dict]:
+JUDGE_SYSTEM_PROMPT = (
+    "You are a strict answer evaluator. "
+    "Given a question, a reference answer, and a predicted answer, "
+    "decide whether the predicted answer is correct.\n\n"
+    "Rules:\n"
+    "- Minor wording differences are acceptable as long as the core fact is the same.\n"
+    "- Partial answers that miss key facts are INCORRECT.\n"
+    "- If there is no reference answer, output 'unknown'.\n\n"
+    "Reply with exactly one word: 'correct', 'incorrect', or 'unknown'."
+)
+
+JUDGE_USER_TEMPLATE = (
+    "Question: {question}\n\n"
+    "Reference answer: {gold_answer}\n\n"
+    "Predicted answer: {predicted_answer}\n\n"
+    "Is the predicted answer correct?"
+)
+
+
+# ---------------------------------------------------------------------------
+# Judge client
+# ---------------------------------------------------------------------------
+
+class JudgeClient:
+    """Calls an OpenAI-compatible chat API to judge answer correctness."""
+
+    def __init__(self, config: dict):
+        cfg = config["judge"]
+        self.api_url: str = cfg["api_url"].rstrip("/")
+        self.api_key: str = cfg.get("api_key", "")
+        self.model: str = cfg.get("model", "gpt-4o")
+        self.temperature: float = cfg.get("temperature", 0.0)
+        self.timeout: int = cfg.get("timeout", 30)
+        self.max_retries: int = cfg.get("max_retries", 3)
+
+    def judge(self, question: str, gold_answer: str, predicted_answer: str) -> str:
+        """Return 'correct', 'incorrect', or 'unknown'."""
+        if not gold_answer or not predicted_answer:
+            return "unknown"
+
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "messages": [
+                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": JUDGE_USER_TEMPLATE.format(
+                        question=question,
+                        gold_answer=gold_answer,
+                        predicted_answer=predicted_answer,
+                    ),
+                },
+            ],
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = requests.post(
+                    f"{self.api_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                verdict = (
+                    resp.json()["choices"][0]["message"]["content"]
+                    .strip()
+                    .lower()
+                    .split()[0]  # take first word only
+                )
+                if verdict in ("correct", "incorrect", "unknown"):
+                    return verdict
+                # unexpected output — treat as incorrect
+                return "incorrect"
+            except Exception as exc:
+                if attempt == self.max_retries:
+                    print(f"  [Judge error after {attempt} attempts] {exc}")
+                    return "unknown"
+                time.sleep(2 ** attempt)  # exponential backoff
+
+        return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Evaluation helpers
+# ---------------------------------------------------------------------------
+
+def load_predictions(path: str | Path) -> list[dict]:
     records = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -36,47 +128,14 @@ def load_benchmark(path: str | Path) -> list[dict]:
     return records
 
 
-# ---------------------------------------------------------------------------
-# Evaluation helpers
-# ---------------------------------------------------------------------------
-
-def evaluate_single(workflow: SearchWorkflow, record: dict) -> dict:
-    """Run one benchmark record through the workflow and return the result entry."""
-    question = record["question"]
-    gold_answer = record.get("answer", "")
-    root_url = record.get("root_url", "")
-
-    # Optionally include root_url as search context
-    query = question
-    if root_url:
-        query = f"{question}\n(Reference site: {root_url})"
-
-    try:
-        result = workflow.run(query)
-        return {
-            "question": question,
-            "gold_answer": gold_answer,
-            "predicted_answer": result["answer"],
-            "used_sources": result["used_sources"],
-            "final_memory": result["memory"],
-            "num_rounds": len(result["rounds"]),
-            "root_url": root_url,
-            "info": record.get("info", {}),
-            "error": None,
-        }
-    except Exception as exc:
-        traceback.print_exc()
-        return {
-            "question": question,
-            "gold_answer": gold_answer,
-            "predicted_answer": "",
-            "used_sources": {},
-            "final_memory": "",
-            "num_rounds": 0,
-            "root_url": root_url,
-            "info": record.get("info", {}),
-            "error": str(exc),
-        }
+def evaluate_record(judge: JudgeClient, record: dict) -> dict:
+    """Judge a single prediction record and return an enriched result dict."""
+    verdict = judge.judge(
+        question=record.get("question", ""),
+        gold_answer=record.get("gold_answer", ""),
+        predicted_answer=record.get("predicted_answer", ""),
+    )
+    return {**record, "verdict": verdict}
 
 
 # ---------------------------------------------------------------------------
@@ -84,63 +143,91 @@ def evaluate_single(workflow: SearchWorkflow, record: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate search agent on a JSONL benchmark.")
+    parser = argparse.ArgumentParser(
+        description="Score infer.py predictions using a judge model."
+    )
+    parser.add_argument("--input", required=True, help="Prediction JSONL file from infer.py")
     parser.add_argument("--config", default=None, help="Path to config.yaml")
-    parser.add_argument("--benchmark", default=None, help="Override benchmark JSONL path")
-    parser.add_argument("--limit", type=int, default=None, help="Max number of questions to evaluate")
-    parser.add_argument("--offset", type=int, default=0, help="Skip first N questions")
-    parser.add_argument("--output", default=None, help="Output JSONL file path (default: tests/run_<timestamp>.jsonl)")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output JSON file for scored results (default: same dir as input, suffixed _eval.json)",
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=4,
+        help="Number of parallel judge calls (default: 4)"
+    )
     args = parser.parse_args()
 
-    # Load config
     config = load_config(args.config)
+    judge = JudgeClient(config)
 
-    # Resolve paths
-    project_root = Path(__file__).parent
-    benchmark_path = Path(args.benchmark) if args.benchmark else (
-        project_root / config["eval"]["benchmark_path"]
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else input_path.with_name(
+        input_path.stem + "_eval.json"
     )
-    output_dir = project_root / config["eval"]["output_dir"]
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = output_dir / f"run_{ts}.jsonl"
+    print(f"Input : {input_path}")
+    print(f"Output: {output_path}")
+    print(f"Judge : {judge.model} @ {judge.api_url}\n")
 
-    # Load benchmark
-    print(f"Loading benchmark: {benchmark_path}")
-    records = load_benchmark(benchmark_path)
-    records = records[args.offset:]
-    if args.limit is not None:
-        records = records[: args.limit]
-    print(f"Questions to evaluate: {len(records)}")
+    records = load_predictions(input_path)
+    total = len(records)
+    print(f"Records to evaluate: {total}\n")
 
-    # Build workflow
-    print("Loading model...")
-    llm = VLLMModel(config=config)
-    searcher = JinaSearch(config=config)
-    workflow = SearchWorkflow(llm=llm, searcher=searcher, config=config)
+    scored: list[dict] = [None] * total
+    correct = incorrect = unknown = 0
 
-    # Run evaluation
-    print(f"Output file: {output_path}\n")
-    errors = 0
-    with open(output_path, "w", encoding="utf-8") as out_f:
-        for idx, record in enumerate(records, 1):
-            print(f"\n{'=' * 70}")
-            print(f"[{idx}/{len(records)}] {record['question'][:100]}")
-            result = evaluate_single(workflow, record)
-            if result["error"]:
-                errors += 1
-                print(f"[ERROR] {result['error']}")
+    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        futures = {
+            pool.submit(evaluate_record, judge, rec): idx
+            for idx, rec in enumerate(records)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            result = future.result()
+            scored[idx] = result
+            v = result["verdict"]
+            if v == "correct":
+                correct += 1
+            elif v == "incorrect":
+                incorrect += 1
             else:
-                print(f"[Answer] {result['predicted_answer'][:200]}")
-            out_f.write(json.dumps(result, ensure_ascii=False) + "\n")
-            out_f.flush()  # write immediately so partial results are saved
+                unknown += 1
 
-    print(f"\n{'=' * 70}")
-    print(f"Done. {len(records)} questions, {errors} errors.")
+            done = correct + incorrect + unknown
+            print(
+                f"  [{done}/{total}] {result['question'][:60]:<60}  → {v}"
+            )
+
+    # Summary statistics
+    evaluated = correct + incorrect   # excludes unknown
+    accuracy = correct / evaluated if evaluated > 0 else 0.0
+
+    summary = {
+        "input_file": str(input_path),
+        "judge_model": judge.model,
+        "total": total,
+        "correct": correct,
+        "incorrect": incorrect,
+        "unknown": unknown,
+        "evaluated": evaluated,
+        "accuracy": round(accuracy, 4),
+        "accuracy_pct": f"{accuracy * 100:.2f}%",
+    }
+
+    output = {"summary": summary, "results": scored}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+    print(f"\n{'=' * 60}")
+    print(f"Total   : {total}")
+    print(f"Correct : {correct}")
+    print(f"Incorrect: {incorrect}")
+    print(f"Unknown : {unknown}  (no gold answer or judge error)")
+    print(f"Accuracy: {accuracy * 100:.2f}%  ({correct}/{evaluated})")
+    print(f"{'=' * 60}")
     print(f"Results saved to: {output_path}")
 
 

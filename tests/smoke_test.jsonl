@@ -1,0 +1,6 @@
+{"question": "今天我心情真好", "answer": "", "root_url": "", "info": {"domain": "general", "source_website": [], "golden_path": [], "type": "single_source", "difficulty_level": "easy", "lang": "zh"}}
+{"question": "查询特斯拉的实时股价", "answer": "", "root_url": "", "info": {"domain": "finance", "source_website": [], "golden_path": [], "type": "single_source", "difficulty_level": "easy", "lang": "zh"}}
+{"question": "请告诉我2024年夏季奥运会的最新奖牌榜排名情况", "answer": "", "root_url": "", "info": {"domain": "sports", "source_website": [], "golden_path": [], "type": "single_source", "difficulty_level": "medium", "lang": "zh"}}
+{"question": "上海2025年11月25日的天气怎么样?", "answer": "", "root_url": "", "info": {"domain": "weather", "source_website": [], "golden_path": [], "type": "single_source", "difficulty_level": "easy", "lang": "zh"}}
+{"question": "介绍一下最近很火的AI模型Llama3，它的主要特点、技术架构和最新的应用有哪些？请把它涉及的主要技术点都给我介绍清楚。", "answer": "", "root_url": "", "info": {"domain": "technology", "source_website": [], "golden_path": [], "type": "multi_source", "difficulty_level": "hard", "lang": "zh"}}
+{"question": "查询美股七姐妹的实时股价", "answer": "", "root_url": "", "info": {"domain": "finance", "source_website": [], "golden_path": [], "type": "multi_source", "difficulty_level": "medium", "lang": "zh"}}

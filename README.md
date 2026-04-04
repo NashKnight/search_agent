@@ -8,7 +8,7 @@
 
 ```
 search_agent/
-├── config.yaml               # 全局配置（模型路径、API Key、限制参数、评测路径）
+├── config.yaml               # 全局配置（模型路径、API Key、限制参数、裁判配置等）
 ├── __init__.py
 │
 ├── utils/
@@ -31,8 +31,11 @@ search_agent/
 │   └── __init__.py
 │
 ├── search_workflow.py        # SearchWorkflow — 多轮主循环逻辑
-├── eval.py                   # Benchmark 评测入口（CLI 脚本）
-└── tests/                    # 评测结果输出目录（自动生成 run_<时间戳>.jsonl）
+├── infer.py                  # 推理脚本：运行模型，将预测结果写入 tests/
+├── eval.py                   # 评分脚本：调用裁判模型，计算 accuracy
+└── tests/
+    ├── smoke_test.jsonl      # 冒烟测试用例（6 条，无标准答案，用于快速验证流程）
+    └── run_<时间戳>.jsonl    # infer.py 输出的预测结果
 ```
 
 ---
@@ -41,16 +44,18 @@ search_agent/
 
 | 组件 | 职责 |
 |---|---|
-| `config.yaml` | 统一配置入口：模型路径、Jina API Key、代理、Token 限制、评测路径 |
-| `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict，通过依赖注入传递给各模块 |
-| `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate(prompt, max_new_tokens)` 和 `clear_cache()` 接口 |
-| `models/vllm_model.py` | `VLLMModel` — 通过 vLLM 加载本地模型，应用 chat template，返回 `(token_ids, raw, clean)` |
-| `search/base.py` | `BaseSearch` 抽象类 — 定义 `search(query, max_results)` 接口，返回 `{sources, error}` |
-| `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理配置 |
-| `agent/memory.py` | `MemoryManager` — 提供 `initialize()` / `update()` / `get()` / `reset()` 管理记忆板状态 |
-| `agent/prompts.py` | 所有 Prompt 以命名常量形式集中存放（`BASE_PROMPT`、`MEMORY_INIT_PROMPT`、`FILTER_QUERIES_PROMPT` 等） |
-| `search_workflow.py` | `SearchWorkflow.run(query)` — 编排 Round 1 → 搜索循环 → 强制生成最终答案的完整流程 |
-| `eval.py` | CLI 脚本：加载 JSONL benchmark，逐题运行，实时将结果流式写入 `tests/` |
+| `config.yaml` | 统一配置入口：模型路径、Jina API Key、代理、Token 限制、裁判 API |
+| `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
+| `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
+| `models/vllm_model.py` | `VLLMModel` — 通过 vLLM 加载本地模型，应用 chat template |
+| `search/base.py` | `BaseSearch` 抽象类 — 定义 `search(query, max_results)` 接口 |
+| `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理 |
+| `agent/memory.py` | `MemoryManager` — `initialize()` / `update()` / `get()` / `reset()` |
+| `agent/prompts.py` | 所有 Prompt 以命名常量形式集中存放 |
+| `search_workflow.py` | `SearchWorkflow.run(query)` — 编排完整多轮搜索流程 |
+| `infer.py` | 推理入口：遍历 benchmark，保存原始预测结果到 JSONL |
+| `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
+| `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
 
 ---
 
@@ -64,15 +69,24 @@ pip install vllm transformers requests pyyaml
 
 ### 2. 修改 `config.yaml`
 
-至少需要配置模型路径和 Jina API Key：
+**推理所需（必填）：**
 
 ```yaml
 model:
-  local_model_path: "/path/to/your/model"   # 例如 /root/autodl-tmp/Qwen3-8B
+  local_model_path: "/path/to/your/model"
 
 search:
   jina_api_key: "jina_xxxxxxxxxxxxxxxxxxxx"
-  use_proxy: false   # 如需代理，改为 true 并填写 proxies 字段
+  use_proxy: false
+```
+
+**评分所需（必填）：**
+
+```yaml
+judge:
+  api_url: "https://api.openai.com/v1"   # 任意 OpenAI 兼容接口
+  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"
+  model: "gpt-4o"                         # 或 qwen-max 等
 ```
 
 ---
@@ -80,6 +94,61 @@ search:
 ## 使用方法
 
 所有命令均在 **`search_agent/` 目录内**运行。
+
+---
+
+### Step 1：推理（infer.py）
+
+运行模型，将预测结果写入 `tests/` 目录。
+
+```bash
+# 使用冒烟测试集快速验证（6 条，无标准答案）
+python infer.py --benchmark tests/smoke_test.jsonl
+
+# 跑完整 WebWalker benchmark（路径从 config.yaml 读取）
+python infer.py
+
+# 只跑前 N 条
+python infer.py --limit 10
+
+# 跳过前 N 条（断点续跑）
+python infer.py --offset 50 --limit 20
+
+# 指定 benchmark 文件
+python infer.py --benchmark ../benchmark/webwalker/main-00000-of-00001.jsonl
+
+# 自定义输出路径
+python infer.py --output tests/my_run.jsonl
+
+# 组合参数
+python infer.py \
+  --benchmark ../benchmark/webwalker/main-00000-of-00001.jsonl \
+  --limit 50 \
+  --offset 0 \
+  --output tests/webwalker_50.jsonl
+```
+
+---
+
+### Step 2：评分（eval.py）
+
+读取 infer.py 生成的 JSONL，调用裁判模型逐条打分，输出 accuracy。
+
+```bash
+# 评分指定的预测文件（结果保存为同名 _eval.json）
+python eval.py --input tests/run_20240101_120000.jsonl
+
+# 自定义输出路径
+python eval.py --input tests/run_20240101_120000.jsonl --output tests/result.json
+
+# 调整并发数（默认 4，加快评分速度）
+python eval.py --input tests/run_20240101_120000.jsonl --concurrency 8
+
+# 使用不同的 config（换裁判模型）
+python eval.py --input tests/run.jsonl --config config.yaml
+```
+
+---
 
 ### 单条查询（Python 调用）
 
@@ -94,79 +163,49 @@ workflow = SearchWorkflow(llm=llm, searcher=searcher)
 
 result = workflow.run("EU4Health 资助的 SUPPLY 项目是什么时候开始的？")
 
-print(result["answer"])          # 最终答案
-print(result["memory"])          # 最终记忆板状态
-print(result["used_sources"])    # {url: title} 引用来源
-print(result["rounds"])          # 每轮详细 trace
-```
-
-### 运行 Benchmark 评测（默认配置）
-
-评测 `config.yaml → eval.benchmark_path` 中指定的全量 benchmark，
-结果保存至 `search_agent/tests/run_<时间戳>.jsonl`。
-
-```bash
-python eval.py
-```
-
-### 只评测前 N 条
-
-```bash
-python eval.py --limit 10
-```
-
-### 跳过前 N 条（断点续评）
-
-```bash
-python eval.py --offset 50 --limit 20
-```
-
-### 指定不同的 benchmark 文件
-
-```bash
-python eval.py --benchmark /path/to/other_benchmark.jsonl
-```
-
-### 自定义输出文件路径
-
-```bash
-python eval.py --output search_agent/tests/my_run.jsonl
-```
-
-### 指定不同的配置文件
-
-```bash
-python eval.py --config /path/to/other_config.yaml
-```
-
-### 组合参数示例
-
-```bash
-python eval.py \
-  --config search_agent/config.yaml \
-  --benchmark ../benchmark/webwalker/main-00000-of-00001.jsonl \
-  --limit 50 \
-  --offset 0 \
-  --output search_agent/tests/webwalker_50.jsonl
+print(result["answer"])        # 最终答案
+print(result["memory"])        # 最终记忆板状态
+print(result["used_sources"])  # {url: title} 引用来源
+print(result["rounds"])        # 每轮详细 trace
 ```
 
 ---
 
-## 输出格式
+## 文件格式说明
 
-`tests/` 目录下每个 JSONL 文件，每行为一条评测结果：
+### infer.py 输出（`tests/run_*.jsonl`）
+
+每行一条预测结果：
 
 ```json
 {
-  "question": "EU4Health 资助的 SUPPLY 项目是什么时候开始的？",
-  "gold_answer": "EU4Health 项目，2022年9月1日开始，持续18个月。",
-  "predicted_answer": "SUPPLY 项目由 EU4Health 计划资助，于 2022 年 9 月 1 日启动……",
-  "used_sources": {"https://ehaweb.org/...": "EHA News"},
+  "question": "查询特斯拉的实时股价",
+  "gold_answer": "...",
+  "predicted_answer": "截至今日，特斯拉（TSLA）股价为 ...",
+  "used_sources": {"https://...": "Tesla Stock Price"},
   "final_memory": "[User Goal]\n...\n[Collected Information]\n...",
-  "num_rounds": 4,
-  "root_url": "https://ehaweb.org/",
-  "info": {"domain": "conference", "difficulty_level": "medium"},
+  "num_rounds": 3,
+  "root_url": "",
+  "info": {"domain": "finance", "difficulty_level": "easy"},
   "error": null
+}
+```
+
+### eval.py 输出（`tests/*_eval.json`）
+
+```json
+{
+  "summary": {
+    "total": 100,
+    "correct": 72,
+    "incorrect": 24,
+    "unknown": 4,
+    "evaluated": 96,
+    "accuracy": 0.75,
+    "accuracy_pct": "75.00%",
+    "judge_model": "gpt-4o"
+  },
+  "results": [ ... ]
 }
 ```
 
@@ -186,6 +225,6 @@ python eval.py \
 2. 实现 `search()`，返回 `{"sources": {...}, "error": None}`
 3. 实例化后传入 `SearchWorkflow(searcher=YourSearch(), ...)`
 
-### 修改 Prompt
+### 更换裁判模型
 
-所有 Prompt 模板集中在 `agent/prompts.py`，直接修改对应常量即可，无需改动其他文件。
+只需修改 `config.yaml` 的 `judge` 块，指向任意 OpenAI-compatible 接口即可，代码无需改动。

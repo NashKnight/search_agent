@@ -7,3 +7,4 @@ dist/
 build/
 .DS_Store
 tests/*.jsonl
+!tests/smoke_test.jsonl
