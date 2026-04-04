@@ -3,19 +3,25 @@ Inference script — runs the search agent over a JSONL benchmark and saves raw 
 
 Does NOT compute metrics. Pass the output to eval.py for scoring.
 
+Requires a running vLLM server (start with: bash start_vllm.sh --port PORT)
+
 Usage
 -----
-    python infer.py [--config config.yaml] [--limit N] [--offset N] [--output tests/run_NAME.jsonl]
+    python infer.py [--config config.yaml] [--port 6001] [--workers 8] \\
+                    [--benchmark data.jsonl] [--output results.jsonl]
 """
 
 import argparse
 import json
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-from models.vllm_model import VLLMModel
+from tqdm import tqdm
+
+from models.vllm_server_model import VLLMServerModel
 from search.jina_search import JinaSearch
 from search_workflow import SearchWorkflow
 from utils import load_config
@@ -36,16 +42,15 @@ def load_benchmark(path: str | Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Evaluation helpers
+# Single-sample inference
 # ---------------------------------------------------------------------------
 
-def evaluate_single(workflow: SearchWorkflow, record: dict) -> dict:
+def run_single(workflow: SearchWorkflow, record: dict) -> dict:
     """Run one benchmark record through the workflow and return the result entry."""
     question = record["question"]
     gold_answer = record.get("answer", "")
     root_url = record.get("root_url", "")
 
-    # Optionally include root_url as search context
     query = question
     if root_url:
         query = f"{question}\n(Reference site: {root_url})"
@@ -84,17 +89,18 @@ def evaluate_single(workflow: SearchWorkflow, record: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate search agent on a JSONL benchmark.")
-    parser.add_argument("--config", default=None, help="Path to config.yaml")
-    parser.add_argument("--benchmark", default=None, help="Override benchmark JSONL path")
-    parser.add_argument("--limit", type=int, default=None, help="Max number of questions to evaluate")
-    parser.add_argument("--offset", type=int, default=0, help="Skip first N questions")
-    parser.add_argument("--output", default=None, help="Output JSONL file path (default: tests/run_<timestamp>.jsonl)")
+    parser.add_argument("--config",    default=None,  help="Path to config.yaml")
+    parser.add_argument("--benchmark", default=None,  help="Override benchmark JSONL path")
+    parser.add_argument("--port",      type=int, default=None, help="vLLM server port (overrides config)")
+    parser.add_argument("--workers",   type=int, default=4,    help="Number of parallel inference threads")
+    parser.add_argument("--limit",     type=int, default=None, help="Max number of questions")
+    parser.add_argument("--offset",    type=int, default=0,    help="Skip first N questions")
+    parser.add_argument("--output",    default=None,  help="Output JSONL path (default: tests/run_<ts>.jsonl)")
     args = parser.parse_args()
 
-    # Load config
+    # ── Config & paths ────────────────────────────────────────────────────────
     config = load_config(args.config)
 
-    # Resolve paths
     project_root = Path(__file__).parent
     benchmark_path = Path(args.benchmark) if args.benchmark else (
         project_root / config["eval"]["benchmark_path"]
@@ -108,39 +114,73 @@ def main():
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"run_{ts}.jsonl"
 
-    # Load benchmark
-    print(f"Loading benchmark: {benchmark_path}")
+    # ── Load benchmark ────────────────────────────────────────────────────────
+    tqdm.write(f"Loading benchmark: {benchmark_path}")
     records = load_benchmark(benchmark_path)
     records = records[args.offset:]
     if args.limit is not None:
         records = records[: args.limit]
-    print(f"Questions to evaluate: {len(records)}")
+    tqdm.write(f"Questions to evaluate: {len(records)}")
 
-    # Build workflow
-    print("Loading model...")
-    llm = VLLMModel(config=config)
+    # ── Build shared workflow (stateless across calls) ────────────────────────
+    port = args.port  # None → VLLMServerModel reads from config
+    tqdm.write(f"Connecting to vLLM server on port {port or config.get('vllm_server', {}).get('port', 6001)} ...")
+    llm = VLLMServerModel(config=config, port=port)
     searcher = JinaSearch(config=config)
     workflow = SearchWorkflow(llm=llm, searcher=searcher, config=config)
 
-    # Run evaluation
-    print(f"Output file: {output_path}\n")
+    tqdm.write(f"Workers: {args.workers}")
+    tqdm.write(f"Output:  {output_path}\n")
+
+    # ── Parallel inference ────────────────────────────────────────────────────
+    # results_by_idx preserves original ordering regardless of completion order
+    results_by_idx: dict[int, dict] = {}
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        future_to_idx = {
+            executor.submit(run_single, workflow, record): idx
+            for idx, record in enumerate(records)
+        }
+
+        with tqdm(total=len(records), desc="Inference", unit="sample", dynamic_ncols=True) as pbar:
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    record = records[idx]
+                    tqdm.write(f"[FATAL] idx={idx} q={record['question'][:60]!r}: {exc}")
+                    result = {
+                        "question": record["question"],
+                        "gold_answer": record.get("answer", ""),
+                        "predicted_answer": "",
+                        "used_sources": {},
+                        "final_memory": "",
+                        "num_rounds": 0,
+                        "root_url": record.get("root_url", ""),
+                        "info": record.get("info", {}),
+                        "error": str(exc),
+                    }
+
+                results_by_idx[idx] = result
+
+                status = "ERR" if result.get("error") else "OK"
+                tqdm.write(f"[{status}] idx={idx} rounds={result.get('num_rounds', 0)} "
+                           f"q={result['question'][:60]!r}")
+                pbar.update(1)
+
+    # ── Write results in original input order ─────────────────────────────────
+    tqdm.write(f"\nWriting {len(results_by_idx)} results in original order...")
     errors = 0
     with open(output_path, "w", encoding="utf-8") as out_f:
-        for idx, record in enumerate(records, 1):
-            print(f"\n{'=' * 70}")
-            print(f"[{idx}/{len(records)}] {record['question'][:100]}")
-            result = evaluate_single(workflow, record)
-            if result["error"]:
+        for idx in range(len(records)):
+            result = results_by_idx[idx]
+            if result.get("error"):
                 errors += 1
-                print(f"[ERROR] {result['error']}")
-            else:
-                print(f"[Answer] {result['predicted_answer'][:200]}")
             out_f.write(json.dumps(result, ensure_ascii=False) + "\n")
-            out_f.flush()  # write immediately so partial results are saved
 
-    print(f"\n{'=' * 70}")
-    print(f"Done. {len(records)} questions, {errors} errors.")
-    print(f"Results saved to: {output_path}")
+    tqdm.write(f"\nDone. {len(records)} questions, {errors} errors.")
+    tqdm.write(f"Results saved to: {output_path}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,10 @@ model:
   temperature: 0.7
   top_p: 0.8
 
+vllm_server:
+  host: "127.0.0.1"
+  port: 6001
+
 search:
   jina_api_key: "jina_800f62ec9cc745e09f058c4652a961feziG6FeCa71toa9my7gXm3prQbJaF"
   jina_endpoint: "https://s.jina.ai"
