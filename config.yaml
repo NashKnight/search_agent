@@ -33,9 +33,12 @@ eval:
   batch_size: 1
 
 judge:
-  api_url: "https://api.openai.com/v1"   # any OpenAI-compatible endpoint
-  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"      # your API key
-  model: "gpt-4o"                         # judge model name
+  model_path: "/root/autodl-tmp/models/qwen-72b-instruct"  # path passed to start_judge_vllm.sh
+  api_url: "http://127.0.0.1:6002/v1"   # local judge vLLM (start with: bash start_judge_vllm.sh -d)
+  api_key: "EMPTY"                       # local vLLM does not need a real key
+  model: "qwen-72b-instruct"             # model name as returned by /v1/models
   temperature: 0.0
-  timeout: 30
-  max_retries: 3
+  timeout: 60
+  max_retries: 5
+  gpu_memory_utilization: 0.90
+  max_model_len: 8192
