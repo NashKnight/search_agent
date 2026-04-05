@@ -2,8 +2,11 @@
 Evaluation script — reads infer.py output and scores predictions with a local judge model.
 
 The judge is a vLLM server on port 6002 (start with: bash start_judge_vllm.sh -d).
-Uses the JUDGE_PROMPT_GAIA style from DeepResearch: judge sees question, gold answer,
-predicted answer, and the source URLs collected during inference as auxiliary context.
+Uses JUDGE_PROMPT_GAIA style: judge sees question, gold answer, predicted answer,
+and source URLs as auxiliary context.
+
+Supports multi-rollout format (default from infer.py): Pass@N = at least one
+rollout correct. Also reports Avg.Pass (average per-rollout accuracy).
 
 Usage
 -----
@@ -24,7 +27,7 @@ from utils import load_config
 
 
 # ---------------------------------------------------------------------------
-# Judge prompt  (JUDGE_PROMPT_GAIA style, extended with source context)
+# Judge prompt — JUDGE_PROMPT_GAIA style + source context
 # ---------------------------------------------------------------------------
 
 JUDGE_PROMPT = """You are an evaluation assistant. Please determine if the predicted answer is equivalent to the labeled answer.
@@ -43,12 +46,10 @@ Please respond with "Correct" if they are equivalent, or "Incorrect" if they are
 
 
 def _format_sources(used_sources: dict) -> str:
-    """Format used_sources dict {url: title} into a readable list."""
     if not used_sources:
         return "(none)"
-    lines = []
-    for url, title in list(used_sources.items())[:10]:  # cap at 10 to avoid prompt bloat
-        lines.append(f"- {title}: {url}")
+    lines = [f"- {title}: {url}"
+             for url, title in list(used_sources.items())[:10]]
     return "\n".join(lines)
 
 
@@ -57,37 +58,29 @@ def _format_sources(used_sources: dict) -> str:
 # ---------------------------------------------------------------------------
 
 class JudgeClient:
-    """Calls the local judge vLLM via OpenAI-compatible API."""
-
     def __init__(self, config: dict):
-        cfg = config["judge"]
-        api_url: str = cfg["api_url"].rstrip("/")
-        api_key: str = cfg.get("api_key", "EMPTY")
+        cfg             = config["judge"]
+        api_url: str    = cfg["api_url"].rstrip("/")
+        api_key: str    = cfg.get("api_key", "EMPTY")
         self.model: str = cfg.get("model", "")
-        self.temperature: float = float(cfg.get("temperature", 0.0))
-        self.timeout: float = float(cfg.get("timeout", 60))
-        self.max_retries: int = int(cfg.get("max_retries", 5))
+        self.temperature  = float(cfg.get("temperature", 0.0))
+        self.timeout      = float(cfg.get("timeout", 60))
+        self.max_retries  = int(cfg.get("max_retries", 5))
 
-        self._client = OpenAI(
-            api_key=api_key,
-            base_url=api_url,
-            timeout=self.timeout,
-        )
+        self._client = OpenAI(api_key=api_key, base_url=api_url, timeout=self.timeout)
 
-        # Auto-detect model name from server if not set in config
         if not self.model:
             try:
-                models = self._client.models.list()
-                self.model = models.data[0].id
+                self.model = self._client.models.list().data[0].id
             except Exception:
                 raise RuntimeError(
-                    "Judge model name not set in config.yaml and could not be auto-detected. "
-                    "Is the judge vLLM running on the configured port?"
+                    "Judge model not set in config.yaml and server unreachable. "
+                    "Start judge vLLM: bash start_judge_vllm.sh -d"
                 )
 
     def judge(self, question: str, gold_answer: str, predicted_answer: str,
               used_sources: dict) -> str:
-        """Return 'correct' or 'incorrect'."""
+        """Return 'correct', 'incorrect', or 'unknown'."""
         if not gold_answer or not predicted_answer:
             return "unknown"
 
@@ -106,19 +99,17 @@ class JudgeClient:
                     max_tokens=16,
                     messages=[{"role": "user", "content": prompt}],
                 )
-                raw = resp.choices[0].message.content.strip()
-                # Accept "Correct" / "Incorrect" (case-insensitive, first word)
+                raw        = resp.choices[0].message.content.strip()
                 first_word = raw.lower().split()[0] if raw else ""
                 if first_word.startswith("correct"):
                     return "correct"
                 if first_word.startswith("incorrect"):
                     return "incorrect"
-                # Unexpected output — treat as incorrect
-                print(f"  [Judge] unexpected response: {raw!r}")
+                print(f"  [Judge] unexpected: {raw!r}")
                 return "incorrect"
             except Exception as exc:
                 if attempt == self.max_retries:
-                    print(f"  [Judge error after {attempt} attempts] {exc}")
+                    print(f"  [Judge error ×{attempt}] {exc}")
                     return "unknown"
                 time.sleep(min(2 ** attempt, 30))
 
@@ -139,14 +130,45 @@ def load_predictions(path: str | Path) -> list[dict]:
     return records
 
 
+def _normalize_rollouts(record: dict) -> list[dict]:
+    """Return list of rollout dicts. Handles both multi-rollout and legacy single format."""
+    if "rollouts" in record:
+        return record["rollouts"]
+    # legacy single-rollout format from pre-5.1
+    return [{
+        "rollout_idx":      1,
+        "predicted_answer": record.get("predicted_answer", ""),
+        "used_sources":     record.get("used_sources", {}),
+        "final_memory":     record.get("final_memory", ""),
+        "num_rounds":       record.get("num_rounds", 0),
+        "error":            record.get("error"),
+    }]
+
+
 def evaluate_record(judge: JudgeClient, record: dict) -> dict:
-    verdict = judge.judge(
-        question=record.get("question", ""),
-        gold_answer=record.get("gold_answer", ""),
-        predicted_answer=record.get("predicted_answer", ""),
-        used_sources=record.get("used_sources", {}),
-    )
-    return {**record, "verdict": verdict}
+    """Judge every rollout, return record enriched with per-rollout verdicts and Pass@N."""
+    question    = record.get("question", "")
+    gold_answer = record.get("gold_answer", "")
+    rollouts    = _normalize_rollouts(record)
+
+    scored_rollouts = []
+    for ro in rollouts:
+        verdict = judge.judge(
+            question=question,
+            gold_answer=gold_answer,
+            predicted_answer=ro.get("predicted_answer", ""),
+            used_sources=ro.get("used_sources", {}),
+        )
+        scored_rollouts.append({**ro, "verdict": verdict})
+
+    # Pass@N: at least one rollout correct
+    pass_at_n = any(ro["verdict"] == "correct" for ro in scored_rollouts)
+
+    return {
+        **record,
+        "rollouts":   scored_rollouts,
+        "pass_at_n":  pass_at_n,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -155,21 +177,20 @@ def evaluate_record(judge: JudgeClient, record: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Score infer.py predictions using the local judge vLLM on port 6002."
+        description="Score infer.py predictions using the local judge vLLM."
     )
-    parser.add_argument("--input",       required=True, help="Prediction JSONL file from infer.py")
-    parser.add_argument("--config",      default=None,  help="Path to config.yaml")
-    parser.add_argument("--output",      default=None,  help="Output JSON file (default: <input>_eval.json)")
-    parser.add_argument("--concurrency", type=int, default=8, help="Parallel judge calls (default: 8)")
+    parser.add_argument("--input",       required=True, help="Prediction JSONL from infer.py")
+    parser.add_argument("--config",      default=None)
+    parser.add_argument("--output",      default=None,  help="Output JSON (default: <input>_eval.json)")
+    parser.add_argument("--concurrency", type=int, default=8)
     args = parser.parse_args()
 
     config = load_config(args.config)
-    judge = JudgeClient(config)
+    judge  = JudgeClient(config)
 
     input_path  = Path(args.input)
-    output_path = Path(args.output) if args.output else input_path.with_name(
-        input_path.stem + "_eval.json"
-    )
+    output_path = Path(args.output) if args.output else \
+        input_path.with_name(input_path.stem + "_eval.json")
 
     print(f"Input  : {input_path}")
     print(f"Output : {output_path}")
@@ -178,46 +199,66 @@ def main():
 
     records = load_predictions(input_path)
     total   = len(records)
-    print(f"Records to evaluate: {total}\n")
+    # detect rollout count from first record
+    n_rollouts = len(_normalize_rollouts(records[0])) if records else 1
+    print(f"Records    : {total}")
+    print(f"Rollouts   : {n_rollouts} per question  →  judging {total * n_rollouts} predictions\n")
 
     scored: list[dict] = [None] * total
-    correct = incorrect = unknown = 0
+
+    # counters
+    pass_n = 0          # questions where ≥1 rollout correct  (Pass@N)
+    total_correct_rollouts = 0   # for Avg.Pass
+    total_judged_rollouts  = 0
+    unknown_rollouts       = 0
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = {
-            pool.submit(evaluate_record, judge, rec): idx
-            for idx, rec in enumerate(records)
-        }
+        futures = {pool.submit(evaluate_record, judge, rec): idx
+                   for idx, rec in enumerate(records)}
+
         for future in as_completed(futures):
             idx    = futures[future]
             result = future.result()
             scored[idx] = result
-            v = result["verdict"]
-            if v == "correct":
-                correct   += 1
-            elif v == "incorrect":
-                incorrect += 1
-            else:
-                unknown   += 1
 
-            done = correct + incorrect + unknown
-            q_short = result["question"][:55]
-            print(f"  [{done:>4}/{total}]  {v.upper():<10}  {q_short}")
+            rollouts   = result.get("rollouts", [])
+            verdicts   = [ro["verdict"] for ro in rollouts]
+            n_correct  = sum(v == "correct"   for v in verdicts)
+            n_unknown  = sum(v == "unknown"   for v in verdicts)
+            n_judged   = sum(v != "unknown"   for v in verdicts)
 
-    evaluated = correct + incorrect
-    accuracy  = correct / evaluated if evaluated > 0 else 0.0
+            if result["pass_at_n"]:
+                pass_n += 1
+            total_correct_rollouts += n_correct
+            total_judged_rollouts  += n_judged
+            unknown_rollouts       += n_unknown
+
+            done      = sum(1 for s in scored if s is not None)
+            tag       = "PASS" if result["pass_at_n"] else "FAIL"
+            v_summary = "/".join(v[0].upper() for v in verdicts)   # e.g. C/I/C
+            print(f"  [{done:>4}/{total}]  {tag}  [{v_summary}]  {result['question'][:50]}")
+
+    # ── Metrics ──────────────────────────────────────────────────────────────
+    pass_at_n_pct = pass_n / total if total else 0.0
+    avg_pass      = (total_correct_rollouts / total_judged_rollouts
+                     if total_judged_rollouts else 0.0)
 
     summary = {
-        "input_file":    str(input_path),
-        "judge_model":   judge.model,
-        "judge_api":     config["judge"]["api_url"],
-        "total":         total,
-        "correct":       correct,
-        "incorrect":     incorrect,
-        "unknown":       unknown,
-        "evaluated":     evaluated,
-        "accuracy":      round(accuracy, 4),
-        "accuracy_pct":  f"{accuracy * 100:.2f}%",
+        "input_file":      str(input_path),
+        "judge_model":     judge.model,
+        "judge_api":       config["judge"]["api_url"],
+        "total_questions": total,
+        "rollouts_per_q":  n_rollouts,
+        # Pass@N — at least 1 rollout correct
+        "pass_at_n":       pass_n,
+        "pass_at_n_pct":   f"{pass_at_n_pct * 100:.2f}%",
+        # Avg.Pass — average of individual rollout accuracies
+        "avg_pass":        round(avg_pass, 4),
+        "avg_pass_pct":    f"{avg_pass * 100:.2f}%",
+        # raw rollout counts
+        "total_correct_rollouts": total_correct_rollouts,
+        "total_judged_rollouts":  total_judged_rollouts,
+        "unknown_rollouts":       unknown_rollouts,
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,11 +266,12 @@ def main():
         json.dump({"summary": summary, "results": scored}, f, ensure_ascii=False, indent=2)
 
     print(f"\n{'=' * 60}")
-    print(f"Total     : {total}")
-    print(f"Correct   : {correct}")
-    print(f"Incorrect : {incorrect}")
-    print(f"Unknown   : {unknown}  (missing gold answer or judge error)")
-    print(f"Accuracy  : {accuracy * 100:.2f}%  ({correct}/{evaluated})")
+    print(f"Questions  : {total}  ×  {n_rollouts} rollouts")
+    print(f"Pass@{n_rollouts}     : {pass_n}/{total}  =  {pass_at_n_pct * 100:.2f}%"
+          f"  (≥1 rollout correct)")
+    print(f"Avg.Pass   : {avg_pass * 100:.2f}%"
+          f"  ({total_correct_rollouts}/{total_judged_rollouts} rollouts correct)")
+    print(f"Unknown    : {unknown_rollouts} rollouts  (no gold answer or judge error)")
     print(f"{'=' * 60}")
     print(f"Results saved to: {output_path}")
 

@@ -1,6 +1,8 @@
-# Search Agent
+# Search Agent 5.1
 
 基于 vLLM + Jina Search 构建的多轮搜索智能体。通过结构化的**记忆板（Memory Board）**跨轮次追踪任务目标、已收集信息和待搜索队列，实现自主的迭代式信息收集与问答。
+
+**v5.1 新增**：默认每题跑 3 次 rollout，eval.py 报 Pass@3（任意一次答对即得分）和 Avg.Pass（3次平均准确率），与 WebDancer 评测体系对齐。
 
 ---
 
@@ -202,12 +204,20 @@ nohup bash start_vllm.sh --port 6001 --gpu 0 > vllm_6001.log 2>&1 &
 
 连接已启动的 vLLM server，多线程并行推理，结果按原始输入顺序写入 JSONL。
 
+默认每题跑 **3 次 rollout**，输出格式包含 `rollouts` 列表，供 eval.py 计算 Pass@3。
+
 ```bash
 # 使用冒烟测试集快速验证（6 条，无标准答案）
 python infer.py --benchmark tests/smoke_test.jsonl
 
-# 跑完整 WebWalker benchmark（路径从 config.yaml 读取）
+# 跑完整 WebWalker benchmark（路径从 config.yaml 读取，默认 3 rollout）
 python infer.py
+
+# 单次 rollout（快速验证，不需要 Pass@3）
+python infer.py --onetime
+
+# 自定义 rollout 次数
+python infer.py --rollouts 5
 
 # 开 8 个并发线程
 python infer.py --workers 8
@@ -233,23 +243,33 @@ python infer.py \
 
 ### Step 3：评分（eval.py）
 
-先启动裁判 vLLM server，再运行 eval.py。裁判会结合问题、标准答案、预测答案和参考 URL 综合评判对错。
+先启动裁判 vLLM server，再运行 eval.py。裁判对每个 rollout 独立打分，输出：
+- **Pass@N**：至少 1 次 rollout 答对的题目比例（越高越好，能力上界）
+- **Avg.Pass**：所有 rollout 的平均准确率（稳定性指标，与 WebDancer Avg.Pass@3 对齐）
 
 ```bash
 # 1. 启动裁判 vLLM（双卡，端口 6002，后台运行）
 bash start_judge_vllm.sh -d
 
-# 2. 评分指定的预测文件（结果保存为同名 _eval.json）
+# 2. 评分（自动检测 rollout 数量）
 python eval.py --input tests/run_20240101_120000.jsonl
 
 # 自定义输出路径
 python eval.py --input tests/run_20240101_120000.jsonl --output tests/result.json
 
-# 调整并发数（默认 8）
+# 调整并发数（默认 8，裁判调用并行）
 python eval.py --input tests/run_20240101_120000.jsonl --concurrency 16
 
 # 使用不同的 config
 python eval.py --input tests/run.jsonl --config config.yaml
+```
+
+**输出示例：**
+```
+Questions  : 100  ×  3 rollouts
+Pass@3     : 58/100  =  58.00%  (≥1 rollout correct)
+Avg.Pass   : 48.33%  (145/300 rollouts correct)
+Unknown    : 3 rollouts  (no gold answer or judge error)
 ```
 
 ---
@@ -280,19 +300,26 @@ print(result["rounds"])        # 每轮详细 trace
 
 ### infer.py 输出（`tests/run_*.jsonl`）
 
-每行一条预测结果：
+每行一条记录，包含该题所有 rollout：
 
 ```json
 {
   "question": "查询特斯拉的实时股价",
   "gold_answer": "...",
-  "predicted_answer": "截至今日，特斯拉（TSLA）股价为 ...",
-  "used_sources": {"https://...": "Tesla Stock Price"},
-  "final_memory": "[User Goal]\n...\n[Collected Information]\n...",
-  "num_rounds": 3,
   "root_url": "",
   "info": {"domain": "finance", "difficulty_level": "easy"},
-  "error": null
+  "rollouts": [
+    {
+      "rollout_idx": 1,
+      "predicted_answer": "截至今日，特斯拉（TSLA）股价为 ...",
+      "used_sources": {"https://...": "Tesla Stock Price"},
+      "final_memory": "[User Goal]\n...",
+      "num_rounds": 3,
+      "error": null
+    },
+    {"rollout_idx": 2, ...},
+    {"rollout_idx": 3, ...}
+  ]
 }
 ```
 
@@ -301,14 +328,16 @@ print(result["rounds"])        # 每轮详细 trace
 ```json
 {
   "summary": {
-    "total": 100,
-    "correct": 72,
-    "incorrect": 24,
-    "unknown": 4,
-    "evaluated": 96,
-    "accuracy": 0.75,
-    "accuracy_pct": "75.00%",
-    "judge_model": "gpt-4o"
+    "total_questions": 100,
+    "rollouts_per_q": 3,
+    "pass_at_n": 58,
+    "pass_at_n_pct": "58.00%",
+    "avg_pass": 0.4833,
+    "avg_pass_pct": "48.33%",
+    "total_correct_rollouts": 145,
+    "total_judged_rollouts": 300,
+    "unknown_rollouts": 3,
+    "judge_model": "qwen-72b-instruct"
   },
   "results": [ ... ]
 }
