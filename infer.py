@@ -61,9 +61,18 @@ def run_single(workflow: SearchWorkflow, record: dict, trace_path: Path) -> dict
     gold_answer = record.get("answer", "")
     root_url = record.get("root_url", "")
 
+    lang = record.get("info", {}).get("lang", "")
+
     query = question
     if root_url:
-        query = f"{question}\n(Reference site: {root_url})"
+        query += (
+            f"\n[Search instruction: Start your search from {root_url} as the first entry point. "
+            "Fetch or search that URL first, then expand to other pages or queries as needed.]"
+        )
+    if lang == "en":
+        query += "\n[Language requirement: Your final answer MUST be written in English.]"
+    elif lang == "zh":
+        query += "\n[语言要求：最终回答必须使用中文。]"
 
     # Per-sample trace buffer — thread-safe because it's a local variable
     trace_lines: list[str] = []
