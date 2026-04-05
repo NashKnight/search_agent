@@ -9,7 +9,8 @@
 ```
 search_agent/
 ├── config.yaml               # 全局配置（模型路径、vLLM server 端口、API Key、限制参数、裁判配置等）
-├── start_vllm.sh             # 启动 vLLM server 的独立脚本（端口/GPU/TP 可配置）
+├── start_vllm.sh             # 启动推理 vLLM server（端口 6001，单卡）
+├── start_judge_vllm.sh       # 启动裁判 vLLM server（端口 6002，双卡 TP=2）
 ├── __init__.py
 │
 ├── utils/
@@ -47,7 +48,8 @@ search_agent/
 | 组件 | 职责 |
 |---|---|
 | `config.yaml` | 统一配置入口：模型路径、vLLM server 端口、Jina API Key、代理、Token 限制、裁判 API |
-| `start_vllm.sh` | 独立启动 vLLM server，支持 `--port`、`--gpu`、`--tp` 等参数 |
+| `start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`、`--gpu`、`--tp` 等参数 |
+| `start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
 | `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
 | `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
 | `models/vllm_model.py` | `VLLMModel` — 进程内直接加载模型（备用，单线程场景） |
@@ -92,9 +94,10 @@ search:
 
 ```yaml
 judge:
-  api_url: "https://api.openai.com/v1"   # 任意 OpenAI 兼容接口
-  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"
-  model: "gpt-4o"                         # 或 qwen-max 等
+  model_path: "/path/to/judge/model"     # 裁判模型路径，供 start_judge_vllm.sh 使用
+  api_url: "http://127.0.0.1:6002/v1"   # 本地裁判 vLLM（start_judge_vllm.sh 启动）
+  api_key: "EMPTY"                       # 本地 vLLM 不需要真实 key
+  model: "your-judge-model-name"         # /v1/models 返回的模型名
 ```
 
 ---
@@ -228,21 +231,24 @@ python infer.py \
 
 ---
 
-### Step 2：评分（eval.py）
+### Step 3：评分（eval.py）
 
-读取 infer.py 生成的 JSONL，调用裁判模型逐条打分，输出 accuracy。
+先启动裁判 vLLM server，再运行 eval.py。裁判会结合问题、标准答案、预测答案和参考 URL 综合评判对错。
 
 ```bash
-# 评分指定的预测文件（结果保存为同名 _eval.json）
+# 1. 启动裁判 vLLM（双卡，端口 6002，后台运行）
+bash start_judge_vllm.sh -d
+
+# 2. 评分指定的预测文件（结果保存为同名 _eval.json）
 python eval.py --input tests/run_20240101_120000.jsonl
 
 # 自定义输出路径
 python eval.py --input tests/run_20240101_120000.jsonl --output tests/result.json
 
-# 调整并发数（默认 4，加快评分速度）
-python eval.py --input tests/run_20240101_120000.jsonl --concurrency 8
+# 调整并发数（默认 8）
+python eval.py --input tests/run_20240101_120000.jsonl --concurrency 16
 
-# 使用不同的 config（换裁判模型）
+# 使用不同的 config
 python eval.py --input tests/run.jsonl --config config.yaml
 ```
 
@@ -326,4 +332,4 @@ print(result["rounds"])        # 每轮详细 trace
 
 ### 更换裁判模型
 
-只需修改 `config.yaml` 的 `judge` 块，指向任意 OpenAI-compatible 接口即可，代码无需改动。
+修改 `config.yaml` 的 `judge` 块：`model_path` 指向新模型路径，`model` 填对应名称，重启 `start_judge_vllm.sh` 即可，代码无需改动。
