@@ -32,6 +32,16 @@ eval:
   output_dir: "tests"
   batch_size: 1
 
+webdancer:
+  vllm_port: 6001                          # port where WebDancer vLLM is running
+  serper_api_key: ""                        # https://serper.dev — for Google search
+  max_rounds: 50                            # max LLM calls per question
+  max_new_tokens: 10000                     # per LLM call
+  max_context_chars: 400000                 # ~100K tokens; triggers forced-answer prompt
+  visit_max_chars: 15000                    # truncate Jina page content to this length
+  temperature: 0.6
+  presence_penalty: 1.1
+
 judge:
   model_path: "/root/autodl-tmp/models/qwen-72b-instruct"  # path passed to start_judge_vllm.sh
   api_url: "http://127.0.0.1:6002/v1"   # local judge vLLM (start with: bash start_judge_vllm.sh -d)
