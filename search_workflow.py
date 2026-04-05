@@ -119,6 +119,13 @@ class SearchWorkflow:
         max_rounds = max_rounds or self._max_rounds
         self._llm.clear_cache()
 
+        # Extract <root_url> tag if present; strip it from the prompt query
+        root_url: str | None = None
+        m = re.search(r"<root_url>(https?://[^<\s]+)</root_url>", user_query)
+        if m:
+            root_url = m.group(1).strip()
+        clean_query = re.sub(r"\s*<root_url>.*?</root_url>", "", user_query, flags=re.DOTALL).strip()
+
         memory_mgr = MemoryManager(self._llm)
         search_queue: deque[str] = deque()
         searched_queries: set[str] = set()
@@ -129,10 +136,12 @@ class SearchWorkflow:
         # ── Round 1: initial analysis ─────────────────────────────────────
         log("=" * 70)
         log("=== Round 1: Initial analysis ===")
+        if root_url:
+            log(f"[root_url detected] {root_url}")
 
         init_prompt = (
             f"{BASE_PROMPT}\n\n"
-            f"User question: {user_query}\n\n"
+            f"User question: {clean_query}\n\n"
             "Quick decision:\n"
             "- Uncertain concept/term → <search> immediately\n"
             "- Multiple pieces of info needed → output ALL <search> tags at once\n"
@@ -154,8 +163,8 @@ class SearchWorkflow:
         }
 
         if not buffer:
-            log("[No search needed â generating direct answer]")
-            direct_prompt = DIRECT_ANSWER_PROMPT.format(user_query=user_query)
+            log("[No search needed — generating direct answer]")
+            direct_prompt = DIRECT_ANSWER_PROMPT.format(user_query=clean_query)
             _, _, direct_clean = self._llm.generate(direct_prompt, max_new_tokens=self._max_new_tokens)
             answer = _clean_final(direct_clean)
             entry["clean"] = answer
@@ -168,7 +177,7 @@ class SearchWorkflow:
                 "used_sources": used_sources,
                 "rounds": rounds,
             }
-        memory = memory_mgr.initialize(user_query, buffer)
+        memory = memory_mgr.initialize(clean_query, buffer)
         log(f"\n[Memory initialized]\n{memory}\n")
 
         filtered = _filter_queries(self._llm, memory, buffer)
@@ -177,6 +186,11 @@ class SearchWorkflow:
         for q in filtered:
             if q not in searched_queries:
                 search_queue.append(q)
+
+        # Force root_url to front of queue (guaranteed visit regardless of LLM filter)
+        if root_url and root_url not in searched_queries:
+            search_queue.appendleft(root_url)
+            log(f"[root_url prepended to queue] {root_url}")
 
         entry["filtered_queries"] = filtered
         entry["current_queue"] = list(search_queue)
@@ -197,7 +211,13 @@ class SearchWorkflow:
             searched_queries.add(current_query)
             log(f"[Searching] {current_query}")
 
-            result = self._searcher.search(current_query, max_results=self._max_sources)
+            # URL queries use Jina Reader (visit_url) instead of search; skip relevance filter
+            is_url_query = current_query.startswith("http://") or current_query.startswith("https://")
+            if is_url_query:
+                log(f"[Visiting URL] {current_query}")
+                result = self._searcher.visit_url(current_query)
+            else:
+                result = self._searcher.search(current_query, max_results=self._max_sources)
             round_entry: dict = {
                 "round": round_num,
                 "search_query": current_query,
@@ -217,9 +237,12 @@ class SearchWorkflow:
             formatted = _format_sources(sources, used_sources)
             log(f"[Sources found] {len(sources)}")
 
-            # Check if this query is still relevant before analysing
-            relevance = _filter_queries(self._llm, memory, [current_query])
-            is_relevant = bool(relevance)
+            # URL queries are always considered relevant (forced visit — skip filter)
+            if is_url_query:
+                is_relevant = True
+            else:
+                relevance = _filter_queries(self._llm, memory, [current_query])
+                is_relevant = bool(relevance)
 
             if not is_relevant:
                 log("[Skipped — query no longer relevant]")
@@ -307,7 +330,7 @@ class SearchWorkflow:
         log("=== Final answer generation ===")
         memory = memory_mgr.get()
         final_prompt = FINAL_ANSWER_PROMPT.format(
-            memory=memory, user_query=user_query
+            memory=memory, user_query=clean_query
         )
         _, raw_final, clean_final = self._llm.generate(
             final_prompt, max_new_tokens=self._max_final_tokens

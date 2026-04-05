@@ -61,10 +61,7 @@ def _build_query(record: dict) -> str:
 
     query = question
     if root_url:
-        query += (
-            f"\n[Search instruction: Start your search from {root_url} as the first entry point. "
-            "Fetch or search that URL first, then expand to other pages or queries as needed.]"
-        )
+        query += f"\n<root_url>{root_url}</root_url>"
     if lang == "en":
         query += "\n[Language requirement: Your final answer MUST be written in English.]"
     elif lang == "zh":
