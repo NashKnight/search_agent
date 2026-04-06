@@ -1,7 +1,7 @@
 model:
   local_model_path: "/root/autodl-tmp/models/qwen-8b-instruct"
   gpu_memory_utilization: 0.85
-  max_model_len: 8192
+  max_model_len: 16384
   temperature: 0.7
   top_p: 0.8
 
@@ -43,7 +43,7 @@ webdancer:
   presence_penalty: 1.1
 
 judge:
-  model_path: "/root/autodl-tmp/models/qwen-72b-instruct"  # path passed to start_judge_vllm.sh
+  model_path: "/root/autodl-tmp/models/qwen-32b"  # path passed to start_judge_vllm.sh
   api_url: "http://127.0.0.1:6002/v1"   # local judge vLLM (start with: bash start_judge_vllm.sh -d)
   api_key: "EMPTY"                       # local vLLM does not need a real key
   model: "qwen-72b-instruct"             # model name as returned by /v1/models
@@ -51,4 +51,4 @@ judge:
   timeout: 60
   max_retries: 5
   gpu_memory_utilization: 0.90
-  max_model_len: 8192
+  max_model_len: 16384
