@@ -139,9 +139,14 @@ class SearchWorkflow:
         if root_url:
             log(f"[root_url detected] {root_url}")
 
+        root_url_hint = (
+            f"Reference website: {root_url} — include the site name or domain in your search queries.\n\n"
+            if root_url else ""
+        )
         init_prompt = (
             f"{BASE_PROMPT}\n\n"
             f"User question: {clean_query}\n\n"
+            f"{root_url_hint}"
             "Quick decision:\n"
             "- Uncertain concept/term → <search> immediately\n"
             "- Multiple pieces of info needed → output ALL <search> tags at once\n"
@@ -187,10 +192,6 @@ class SearchWorkflow:
             if q not in searched_queries:
                 search_queue.append(q)
 
-        # Force root_url to front of queue (guaranteed visit regardless of LLM filter)
-        if root_url and root_url not in searched_queries:
-            search_queue.appendleft(root_url)
-            log(f"[root_url prepended to queue] {root_url}")
 
         entry["filtered_queries"] = filtered
         entry["current_queue"] = list(search_queue)
@@ -211,13 +212,7 @@ class SearchWorkflow:
             searched_queries.add(current_query)
             log(f"[Searching] {current_query}")
 
-            # URL queries use Jina Reader (visit_url) instead of search; skip relevance filter
-            is_url_query = current_query.startswith("http://") or current_query.startswith("https://")
-            if is_url_query:
-                log(f"[Visiting URL] {current_query}")
-                result = self._searcher.visit_url(current_query)
-            else:
-                result = self._searcher.search(current_query, max_results=self._max_sources)
+            result = self._searcher.search(current_query, max_results=self._max_sources)
             round_entry: dict = {
                 "round": round_num,
                 "search_query": current_query,
@@ -238,11 +233,8 @@ class SearchWorkflow:
             log(f"[Sources found] {len(sources)}")
 
             # URL queries are always considered relevant (forced visit — skip filter)
-            if is_url_query:
-                is_relevant = True
-            else:
-                relevance = _filter_queries(self._llm, memory, [current_query])
-                is_relevant = bool(relevance)
+            relevance = _filter_queries(self._llm, memory, [current_query])
+            is_relevant = bool(relevance)
 
             if not is_relevant:
                 log("[Skipped — query no longer relevant]")
