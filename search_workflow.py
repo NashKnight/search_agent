@@ -192,6 +192,15 @@ class SearchWorkflow:
             if q not in searched_queries:
                 search_queue.append(q)
 
+        # Move root_url-related queries to the front of the queue
+        if root_url:
+            domain = root_url.split("//")[-1].split("/")[0]
+            priority = [q for q in search_queue if domain in q]
+            for q in priority:
+                search_queue.remove(q)
+                search_queue.appendleft(q)
+            if priority:
+                log(f"[root_url queries prioritized] {priority}")
 
         entry["filtered_queries"] = filtered
         entry["current_queue"] = list(search_queue)
