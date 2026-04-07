@@ -50,7 +50,7 @@ search_agent/
 | 组件 | 职责 |
 |---|---|
 | `config.yaml` | 统一配置入口：模型路径、vLLM server 端口、Jina API Key、代理、Token 限制、裁判 API |
-| `start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`、`--gpu`、`--tp` 等参数 |
+| `start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`/`-p`、`--gpu`、`--tp` 等参数 |
 | `start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
 | `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
 | `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
@@ -191,7 +191,7 @@ nohup bash start_vllm.sh --port 6001 --gpu 0 > vllm_6001.log 2>&1 &
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
-| `--port` | 监听端口 | `config.yaml` 中 `vllm_server.port`，否则 `6001` |
+| `--port` / `-p` | 监听端口 | `config.yaml` 中 `vllm_server.port`，否则 `6001` |
 | `--model` | 模型路径 | `config.yaml` 中 `model.local_model_path` |
 | `--gpu` | `CUDA_VISIBLE_DEVICES` | `0` |
 | `--tp` | `tensor-parallel-size` | `1` |
@@ -220,7 +220,7 @@ python infer.py --onetime
 python infer.py --rollouts 5
 
 # 开 8 个并发线程
-python infer.py --workers 8
+python infer.py --workers 8   # 或 -w 8
 
 # 指定 vLLM server 端口（覆盖 config.yaml）
 python infer.py --port 6002
@@ -258,7 +258,7 @@ python eval.py --input tests/run_20240101_120000.jsonl
 python eval.py --input tests/run_20240101_120000.jsonl --output tests/result.json
 
 # 调整并发数（默认 8，裁判调用并行）
-python eval.py --input tests/run_20240101_120000.jsonl --concurrency 16
+python eval.py --input tests/run_20240101_120000.jsonl --workers 16   # 或 -w 16
 
 # 使用不同的 config
 python eval.py --input tests/run.jsonl --config config.yaml

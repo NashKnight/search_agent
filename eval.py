@@ -12,7 +12,7 @@ Usage
 -----
     python eval.py --input tests/run_20240101_120000.jsonl
     python eval.py --input tests/run.jsonl --output tests/eval_result.json
-    python eval.py --input tests/run.jsonl --concurrency 8
+    python eval.py --input tests/run.jsonl --workers 8
 """
 
 import argparse
@@ -183,7 +183,7 @@ def main():
     parser.add_argument("--input",       required=True, help="Prediction JSONL from infer.py")
     parser.add_argument("--config",      default=None)
     parser.add_argument("--output",      default=None,  help="Output JSON (default: <input>_eval.json)")
-    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--workers", "-w", type=int, default=8, help="Parallel judge threads")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -196,7 +196,7 @@ def main():
     print(f"Input  : {input_path}")
     print(f"Output : {output_path}")
     print(f"Judge  : {judge.model} @ {config['judge']['api_url']}")
-    print(f"Workers: {args.concurrency}\n")
+    print(f"Workers: {args.workers}\n")
 
     records = load_predictions(input_path)
     total   = len(records)
@@ -213,7 +213,7 @@ def main():
     total_judged_rollouts  = 0
     unknown_rollouts       = 0
 
-    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(evaluate_record, judge, rec): idx
                    for idx, rec in enumerate(records)}
 

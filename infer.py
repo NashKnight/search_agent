@@ -3,7 +3,7 @@ Inference script — runs the search agent over a JSONL benchmark and saves raw 
 
 Does NOT compute metrics. Pass the output to eval.py for scoring.
 
-Requires a running vLLM server (start with: bash start_vllm.sh --port PORT)
+Requires a running vLLM server (start with: bash start_vllm.sh -p PORT)
 
 Usage
 -----
@@ -169,7 +169,7 @@ def main():
     parser.add_argument("--config",    default=None,  help="Path to config.yaml")
     parser.add_argument("--benchmark", default=None,  help="Override benchmark JSONL path")
     parser.add_argument("--port",      type=int, default=None, help="vLLM server port (overrides config)")
-    parser.add_argument("--workers",   type=int, default=4,    help="Parallel inference threads")
+    parser.add_argument("--workers", "-w", type=int, default=4, help="Parallel inference threads")
     parser.add_argument("--limit",     type=int, default=None, help="Max number of questions")
     parser.add_argument("--offset",    type=int, default=0,    help="Skip first N questions")
     parser.add_argument("--output",    default=None,  help="Output JSONL path (default: tests/run_<ts>.jsonl)")

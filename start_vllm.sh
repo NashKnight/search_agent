@@ -7,7 +7,7 @@
 #   bash start_vllm.sh --logs          # tail server logs
 #
 # Options:
-#   --port      PORT   Port to listen on         (default: from config.yaml vllm_server.port, else 6001)
+#   --port/-p   PORT   Port to listen on         (default: from config.yaml vllm_server.port, else 6001)
 #   --model/-m  PATH   Model path                (default: from config.yaml model.local_model_path)
 #   --gpu/-g    IDS    CUDA_VISIBLE_DEVICES      (default: 0)
 #   --tp        N      tensor-parallel-size      (default: 1)
