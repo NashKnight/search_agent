@@ -98,6 +98,7 @@ class JudgeClient:
                     temperature=self.temperature,
                     max_tokens=16,
                     messages=[{"role": "user", "content": prompt}],
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
                 raw        = resp.choices[0].message.content.strip()
                 first_word = raw.lower().split()[0] if raw else ""
