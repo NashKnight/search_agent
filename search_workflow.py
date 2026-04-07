@@ -31,7 +31,7 @@ from utils import load_config
 
 def _extract_search_queries(text: str) -> list[str]:
     """Return all <search>…</search> contents from model output."""
-    pattern = r"<search>\s*([^<\n]{1,80}?)\s*</search>"
+    pattern = r"<search>\s*([^<\n]{1,200}?)\s*</search>"
     return [m.group(1).strip() for m in re.finditer(pattern, text, re.IGNORECASE)]
 
 
