@@ -246,6 +246,7 @@ python infer.py \
 先启动裁判 vLLM server，再运行 eval.py。裁判对每个 rollout 独立打分，输出：
 - **Pass@N**：至少 1 次 rollout 答对的题目比例（越高越好，能力上界）
 - **Avg.Pass**：所有 rollout 的平均准确率（稳定性指标，与 WebDancer Avg.Pass@3 对齐）
+- **Difficulty breakdown**：按 `info.difficulty_level` 统计 easy / medium / hard 的 Pass@N 正确题数和正确率
 
 ```bash
 # 1. 启动裁判 vLLM（双卡，端口 6002，后台运行）
@@ -270,6 +271,10 @@ Questions  : 100  ×  3 rollouts
 Pass@3     : 58/100  =  58.00%  (≥1 rollout correct)
 Avg.Pass   : 48.33%  (145/300 rollouts correct)
 Unknown    : 3 rollouts  (no gold answer or judge error)
+Difficulty:
+  - easy   : 20/30  =  66.67%  (Pass@3)
+  - medium : 28/50  =  56.00%  (Pass@3)
+  - hard   : 10/20  =  50.00%  (Pass@3)
 ```
 
 ---
@@ -337,6 +342,26 @@ print(result["rounds"])        # 每轮详细 trace
     "total_correct_rollouts": 145,
     "total_judged_rollouts": 300,
     "unknown_rollouts": 3,
+    "difficulty_level": {
+      "easy": {
+        "total_questions": 30,
+        "correct_questions": 20,
+        "accuracy": 0.6667,
+        "accuracy_pct": "66.67%"
+      },
+      "medium": {
+        "total_questions": 50,
+        "correct_questions": 28,
+        "accuracy": 0.56,
+        "accuracy_pct": "56.00%"
+      },
+      "hard": {
+        "total_questions": 20,
+        "correct_questions": 10,
+        "accuracy": 0.5,
+        "accuracy_pct": "50.00%"
+      }
+    },
     "judge_model": "qwen-72b-instruct"
   },
   "results": [ ... ]

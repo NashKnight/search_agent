@@ -146,6 +146,46 @@ def _normalize_rollouts(record: dict) -> list[dict]:
     }]
 
 
+def _normalize_level(record: dict) -> str:
+    info = record.get("info") or {}
+    level = str(info.get("difficulty_level", "unknown")).strip().lower()
+    aliases = {
+        "easy": "easy",
+        "medium": "medium",
+        "midium": "medium",
+        "hard": "hard",
+    }
+    return aliases.get(level, level or "unknown")
+
+
+def build_level_summary(scored_records: list[dict]) -> dict:
+    level_order = ["easy", "medium", "hard"]
+    buckets: dict[str, dict[str, int]] = {}
+
+    for record in scored_records:
+        level = _normalize_level(record)
+        bucket = buckets.setdefault(level, {"total": 0, "correct": 0})
+        bucket["total"] += 1
+        if record.get("pass_at_n"):
+            bucket["correct"] += 1
+
+    summary: dict[str, dict] = {}
+    for level in level_order + sorted(k for k in buckets if k not in level_order):
+        if level not in buckets:
+            continue
+        total = buckets[level]["total"]
+        correct = buckets[level]["correct"]
+        acc = correct / total if total else 0.0
+        summary[level] = {
+            "total_questions": total,
+            "correct_questions": correct,
+            "accuracy": round(acc, 4),
+            "accuracy_pct": f"{acc * 100:.2f}%",
+        }
+
+    return summary
+
+
 def evaluate_record(judge: JudgeClient, record: dict) -> dict:
     """Judge every rollout, return record enriched with per-rollout verdicts and Pass@N."""
     question    = record.get("question", "")
@@ -262,6 +302,9 @@ def main():
         "unknown_rollouts":       unknown_rollouts,
     }
 
+    level_summary = build_level_summary(scored)
+    summary["difficulty_level"] = level_summary
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "results": scored}, f, ensure_ascii=False, indent=2)
@@ -273,6 +316,13 @@ def main():
     print(f"Avg.Pass   : {avg_pass * 100:.2f}%"
           f"  ({total_correct_rollouts}/{total_judged_rollouts} rollouts correct)")
     print(f"Unknown    : {unknown_rollouts} rollouts  (no gold answer or judge error)")
+    if level_summary:
+        print("Difficulty:")
+        for level, stats in level_summary.items():
+            print(
+                f"  - {level:<6} : {stats['correct_questions']}/{stats['total_questions']}"
+                f"  =  {stats['accuracy_pct']}  (Pass@{n_rollouts})"
+            )
     print(f"{'=' * 60}")
     print(f"Results saved to: {output_path}")
 
