@@ -1,8 +1,10 @@
-# Search Agent 5.1
+# Search Agent 6.0
 
-基于 vLLM + Jina Search 构建的多轮搜索智能体。通过结构化的**记忆板（Memory Board）**跨轮次追踪任务目标、已收集信息和待搜索队列，实现自主的迭代式信息收集与问答。
+基于 vLLM + Jina Search 构建的多轮搜索智能体。
 
-**v5.1 新增**：默认每题跑 3 次 rollout，eval.py 报 Pass@3（任意一次答对即得分）和 Avg.Pass（3次平均准确率），与 WebDancer 评测体系对齐。
+**v6.0（当前版本）**：`infer.py` 升级为 **MA-HReAct**（Memory-Augmented Hierarchical ReAct）架构。引入三阶段多调用设计（Decomposition → Execution Loop → Synthesis），通过结构化工作记忆（SWM）和显式查询队列实现多跳推理，同时保持每条问题的 context 受控（每次 LLM 调用只看当前 memory + 当前 observation，不传递完整对话历史）。
+
+**v5.1 特性保留**：默认每题跑 3 次 rollout，eval.py 报 Pass@3 和 Avg.Pass，与 WebDancer 评测体系对齐。
 
 ---
 
@@ -31,14 +33,15 @@ search_agent/
 │   └── __init__.py
 │
 ├── agent/
-│   ├── memory.py             # MemoryManager — 跨轮次维护全局记忆板
-│   ├── prompts.py            # 所有 Prompt 模板集中管理
+│   ├── memory.py             # MemoryManager（v5.x prototype 使用，v6.0 已内联）
+│   ├── prompts.py            # v5.x prompt 模板集中管理
 │   └── __init__.py
 │
-├── search_workflow.py        # SearchWorkflow — 多轮主循环逻辑
-├── infer.py                  # 推理脚本：多线程并行推理，结果按原始顺序写入 JSONL
-├── infer_base.py             # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
+├── search_workflow.py        # v5.x SearchWorkflow 主循环（prototype）
+├── infer.py                  # 主推理脚本：MA-HReAct 三阶段架构（v6.0）
+├── infer_prototype.py        # v5.x prototype 推理脚本（memory board + 队列过滤）
 ├── infer_react.py            # 基线推理：Vanilla ReAct（Thought/Action/Observation 循环）
+├── infer_base.py             # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
 ├── eval.py                   # 评分脚本：调用裁判模型，计算 accuracy
 └── tests/
     ├── smoke_test.jsonl      # 冒烟测试用例（6 条，无标准答案，用于快速验证流程）
@@ -56,16 +59,12 @@ search_agent/
 | `start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
 | `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
 | `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
-| `models/vllm_model.py` | `VLLMModel` — 进程内直接加载模型（备用，单线程场景） |
 | `models/vllm_server_model.py` | `VLLMServerModel` — 通过 HTTP API 连接 vLLM server（多线程推荐） |
-| `search/base.py` | `BaseSearch` 抽象类 — 定义 `search(query, max_results)` 接口 |
 | `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理 |
-| `agent/memory.py` | `MemoryManager` — `initialize()` / `update()` / `get()` / `reset()` |
-| `agent/prompts.py` | 所有 Prompt 以命名常量形式集中存放 |
-| `search_workflow.py` | `SearchWorkflow.run(query)` — 编排完整多轮搜索流程 |
-| `infer.py` | 推理入口：多线程并行推理，tqdm 进度条，结果按原始顺序写入 JSONL |
-| `infer_base.py` | 基线推理：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
-| `infer_react.py` | 基线推理：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search |
+| `infer.py` | **主推理脚本（v6.0）**：MA-HReAct 三阶段多调用架构，支持多跳推理 |
+| `infer_prototype.py` | v5.x prototype：memory board + 队列过滤，多轮 LLM 调用 |
+| `infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
+| `infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
 | `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
 | `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
 
@@ -89,80 +88,106 @@ model:
 
 vllm_server:
   host: "127.0.0.1"
-  port: 6001          # 与 start_vllm.sh --port 保持一致
+  port: 6001
 
 search:
   jina_api_key: "jina_xxxxxxxxxxxxxxxxxxxx"
   use_proxy: false
+
+eval:
+  benchmark_path: "../benchmark/webwalker/main-00000-of-00001.jsonl"
+  hotpot_benchmark_path: "../benchmark/hotpot/hotpot_dev_distractor_v1.jsonl"
+  output_dir: "tests"
+
+limits:
+  max_rounds: 15
+  max_new_tokens_default: 1536
+  max_final_tokens: 4096
+  max_filter_tokens: 512
+  max_sources_per_search: 5
 ```
 
 **评分所需（必填）：**
 
 ```yaml
 judge:
-  model_path: "/path/to/judge/model"     # 裁判模型路径，供 start_judge_vllm.sh 使用
-  api_url: "http://127.0.0.1:6002/v1"   # 本地裁判 vLLM（start_judge_vllm.sh 启动）
-  api_key: "EMPTY"                       # 本地 vLLM 不需要真实 key
-  model: "your-judge-model-name"         # /v1/models 返回的模型名
+  model_path: "/path/to/judge/model"
+  api_url: "http://127.0.0.1:6002/v1"
+  api_key: "EMPTY"
+  model: "your-judge-model-name"
 ```
 
 ---
 
-## 推理工作流详解
+## infer.py（v6.0）推理架构详解
 
-调用 `python infer.py` 后，内部执行链路如下：
+`infer.py` 使用 MA-HReAct（Memory-Augmented Hierarchical ReAct）架构，每个问题的推理流程分为三个阶段，每个 LLM 调用只有单一职责。
 
 ```
-infer.py
+问题 q
 │
-├─ 1. 读取 config.yaml，加载 benchmark JSONL
+├─ Phase 1: Decomposition（1 次 LLM 调用）
+│     输入：问题文本
+│     输出：<goal> + <plan> + 初始 <tool_call> 列表
+│     → 初始化 SWM（goal, plan, 空 history, 初始 pending queue）
+│     → 若模型输出 <finish>，直接返回答案（无需搜索）
 │
-├─ 2. 初始化组件
-│     ├─ VLLMServerModel ← 连接 vLLM server（HTTP API，需先运行 start_vllm.sh）
-│     ├─ JinaSearch      ← 初始化 Jina Search 客户端
-│     └─ SearchWorkflow  ← 注入上面两个组件
+├─ Phase 2: Execution Loop（每轮 2 次 LLM 调用）
+│   LOOP: pending_queue 非空 且 round <= max_rounds
+│   │
+│   ├─ 从 pending_queue 弹出 current_query
+│   ├─ JinaSearch 执行搜索 → observation
+│   │
+│   ├─ Request 2.1: Analysis + Compression（1 次 LLM 调用）
+│   │     输入：SWM + observation
+│   │     输出（必须）：<new_compressed_history>
+│   │     输出（可选）：<tool_call> × N  或  <finish>
+│   │     → 将 key_fact 写入 SWM.compressed_history
+│   │     → 若 <finish>：返回答案，结束
+│   │     → 将新 <tool_call> 加入 pending_queue（精确去重）
+│   │
+│   └─ Request 2.2: Queue Filter（1 次 LLM 调用）
+│         输入：更新后的 SWM（含新 history + 新 pending_queue）
+│         输出：<keep> / <remove> 决策
+│         → 剔除已搜索过的、无关的、重复的查询
+│         → 若全部删除 / <queue_empty/>：进入 Phase 3
 │
-└─ 3. 多线程（ThreadPoolExecutor）并行处理每条 question
-       ├─ 每个线程独立调用 SearchWorkflow.run(query)
-       ├─ 结果收集到 dict[original_idx -> result]（保序）
-       └─ 全部完成后按原始顺序写入 JSONL
-       │
-       ├─ [Round 1] 初始分析
-       │     ├─ 将 question 拼入 BASE_PROMPT，发给模型
-       │     ├─ 解析模型输出中的 <search>...</search> 标签，提取待搜索词
-       │     ├─ 若无 <search>，说明无需搜索 → 直接返回模型答案，结束
-       │     ├─ 调用 MemoryManager.initialize() 创建记忆板（含用户目标、任务规划、待搜索队列）
-       │     └─ 调用过滤器（模型二次判断）筛掉与目标无关的查询，剩余入队
-       │
-       ├─ [Round 2~N] 搜索循环（直到队列为空或达到 max_rounds）
-       │     ├─ 从队列取出一条查询词
-       │     ├─ 调用 JinaSearch.search() → 请求 Jina Search API，返回最多 5 条结果
-       │     ├─ 过滤器再次判断本条查询是否仍与目标相关
-       │     │     └─ 不相关 → 跳过，不调用模型，不更新记忆板
-       │     ├─ 将搜索结果格式化，拼入 ANALYSIS_PROMPT，发给模型分析
-       │     ├─ 解析模型输出：
-       │     │     ├─ 有新 <search> → 追加到待处理列表
-       │     │     └─ 无 <search>  → 模型认为信息已足够，本轮即为最终答案
-       │     ├─ 合并（旧队列 + 新查询），整体过滤一次，重建队列
-       │     └─ 调用 MemoryManager.update() 将本轮搜索结果和新队列写入记忆板
-       │
-       └─ [Final] 强制生成最终答案（队列耗尽或达到 max_rounds 时触发）
-             ├─ 将完整记忆板拼入 FINAL_ANSWER_PROMPT，发给模型汇总
-             └─ 清理 <think>/<search> 标签，返回干净的最终答案
+└─ Phase 3: Synthesis（1 次 LLM 调用）
+      触发条件：pending_queue 为空 或 max_rounds 耗尽
+      输入：完整 SWM（含所有 compressed_history）+ 原始问题
+      输出：最终答案
+```
 
-infer.py 收到 SearchWorkflow.run() 的返回值后：
-  └─ 将 {question, gold_answer, predicted_answer, used_sources, final_memory, num_rounds} 写入 JSONL
+**SWM（Structured Working Memory）结构：**
+
+```
+[Goal]
+一句话研究目标
+
+[Research Plan]
+1. 步骤一
+2. 步骤二
+...
+
+[Search History]
+- Q: query1 | A: key facts in 1-2 sentences
+- Q: query2 | A: key facts in 1-2 sentences
+...
+
+[Pending Queue]
+- pending_query_1
+- pending_query_2
 ```
 
 **关键数据流：**
 
 ```
 question
-  └→ [模型] 初始分析 → <search> 列表
-       └→ [记忆板] 初始化
-            └→ [过滤器] 筛选查询 → 队列
-                 └→ 循环：[Jina API] 搜索 → [模型] 分析 → 更新队列 + 记忆板
-                      └→ [模型] 最终汇总 → answer
+  → [LLM] Decomposition → goal + plan + tool_calls
+       → SWM 初始化，队列填充
+            → LOOP: pop → Jina search → [LLM] Analysis(obs+SWM) → history + new queries
+                        → [LLM] Filter(SWM) → 剪枝队列
+                              → 队列空 or max_rounds → [LLM] Synthesis(SWM) → answer
 ```
 
 ---
@@ -173,141 +198,110 @@ question
 
 ---
 
-### Step 1：启动 vLLM server（start_vllm.sh）
-
-推理前需先单独启动 vLLM server，脚本会等待端口就绪后才退出等待循环。
+### Step 1：启动 vLLM server
 
 ```bash
-# 基础用法：单卡，端口 6001（从 config.yaml 读取模型路径）
+# 单卡，端口 6001
 bash start_vllm.sh --gpu 0
 
 # 指定端口和模型路径
 bash start_vllm.sh --port 6001 --gpu 0 --model /root/autodl-tmp/Qwen3-8B
 
-# 多卡 Tensor Parallel
-bash start_vllm.sh --port 6001 --gpu 0,1 --tp 2
-
-# 后台运行，日志写文件
+# 后台运行
 nohup bash start_vllm.sh --port 6001 --gpu 0 > vllm_6001.log 2>&1 &
 ```
-
-**参数说明：**
-
-| 参数 | 说明 | 默认值 |
-|---|---|---|
-| `--port` / `-p` | 监听端口 | `config.yaml` 中 `vllm_server.port`，否则 `6001` |
-| `--model` | 模型路径 | `config.yaml` 中 `model.local_model_path` |
-| `--gpu` | `CUDA_VISIBLE_DEVICES` | `0` |
-| `--tp` | `tensor-parallel-size` | `1` |
-| `--timeout` | 等待就绪超时（秒） | `600` |
-| `--extra` | 透传给 `vllm serve` 的额外参数 | — |
 
 ---
 
 ### Step 2：推理
 
-#### 主框架（infer.py）——多轮记忆板搜索
-
-连接已启动的 vLLM server，多线程并行推理，结果按原始输入顺序写入 JSONL。
-
-默认每题跑 **3 次 rollout**，输出格式包含 `rollouts` 列表，供 eval.py 计算 Pass@3。
+#### 主框架（infer.py）—— MA-HReAct 三阶段架构
 
 ```bash
-# 使用冒烟测试集快速验证（6 条，无标准答案）
-python infer.py --benchmark tests/smoke_test.jsonl
+# 冒烟测试（6 条，快速验证流程）
+python infer.py --benchmark tests/smoke_test.jsonl --onetime
 
-# 跑完整 WebWalker benchmark（路径从 config.yaml 读取，默认 3 rollout）
+# WebWalker benchmark（从 config.yaml 读路径，3 rollout）
 python infer.py
 
-# 单次 rollout（快速验证，不需要 Pass@3）
+# HotpotQA benchmark（多跳推理专项测试）
+python infer.py --benchmark hotpot
+
+# 单次 rollout
 python infer.py --onetime
 
 # 自定义 rollout 次数
 python infer.py --rollouts 5
 
-# 开 8 个并发线程
-python infer.py --workers 8   # 或 -w 8
+# 8 个并发线程
+python infer.py --workers 8
 
-# 指定 vLLM server 端口（覆盖 config.yaml）
+# 指定 vLLM server 端口
 python infer.py --port 6002
 
 # 只跑前 N 条
 python infer.py --limit 10
 
-# 跳过前 N 条（断点续跑）
+# 断点续跑（跳过前 N 条）
 python infer.py --offset 50 --limit 20
 
-# 组合参数
+# 完整参数示例
 python infer.py \
-  --benchmark ../benchmark/webwalker/main-00000-of-00001.jsonl \
+  --benchmark hotpot \
   --port 6001 \
   --workers 8 \
-  --output tests/webwalker_run.jsonl
+  --onetime \
+  --output tests/hotpot_run.jsonl
 ```
 
-#### 基线 A（infer_base.py）——直接问答 / 单跳搜索
-
-输出格式与 `infer.py` 完全一致，可直接送入 `eval.py` 评分。
+#### 基线 A（infer_react.py）—— Vanilla ReAct
 
 ```bash
-# 纯 LLM 直接问答（无搜索）
+python infer_react.py --port 6001 --onetime
+python infer_react.py --port 6001 --onetime --benchmark hotpot
+python infer_react.py --port 6001 --workers 4 --max-rounds 10
+```
+
+#### 基线 B（infer_base.py）—— 直接问答 / 单跳搜索
+
+```bash
+# 纯 LLM（无搜索）
 python infer_base.py --port 6001 --onetime
 
-# 单跳 Jina 搜索（搜一次，模型整合后回答）
+# 单跳 Jina 搜索
 python infer_base.py --port 6001 --onetime --jina
-
-# 标准 3 rollout
-python infer_base.py --port 6001 --workers 4 --jina
 ```
 
-#### 基线 B（infer_react.py）——Vanilla ReAct
-
-经典 Thought / Action / Observation 格式，仅开放 `Search[query]` 和 `Finish[answer]`，不使用 visit/read，与主框架共享 `max_rounds` 和 Jina 配置。
+#### 基线 C（infer_prototype.py）—— v5.x prototype
 
 ```bash
-# 单 rollout
-python infer_react.py --port 6001 --onetime
-
-# 限制搜索轮数（对比实验控制变量）
-python infer_react.py --port 6001 --onetime --max-rounds 5
-
-# 标准 3 rollout
-python infer_react.py --port 6001 --workers 4
+python infer_prototype.py --port 6001 --onetime
+python infer_prototype.py --port 6001 --workers 4
 ```
 
-**三种推理模式一览：**
+**推理模式对比：**
 
-| 模式 | 脚本 | 搜索 | 记忆板 | 适用场景 |
-|---|---|---|---|---|
-| 纯 LLM | `infer_base.py` | ✗ | ✗ | 模型内部知识基线 |
-| 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | 单跳 RAG 基线 |
-| Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ReAct 框架基线 |
-| 本框架 | `infer.py` | 多轮 | ✓ | 主实验 |
+| 模式 | 脚本 | 搜索 | 结构化记忆 | 多跳规划 | Context 控制 |
+|---|---|---|---|---|---|
+| 纯 LLM | `infer_base.py` | ✗ | ✗ | ✗ | — |
+| 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | ✗ | — |
+| Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ✗ | 全历史累积 |
+| Prototype (v5.x) | `infer_prototype.py` | 多轮 | ✓ | 部分 | 全历史累积 |
+| **MA-HReAct (v6.0)** | `infer.py` | 多轮 | ✓ | ✓ | 受控（仅当前轮） |
 
 ---
 
 ### Step 3：评分（eval.py）
 
-先启动裁判 vLLM server，再运行 eval.py。裁判对每个 rollout 独立打分，输出：
-- **Pass@N**：至少 1 次 rollout 答对的题目比例（越高越好，能力上界）
-- **Avg.Pass**：所有 rollout 的平均准确率（稳定性指标，与 WebDancer Avg.Pass@3 对齐）
-- **Difficulty breakdown**：按 `info.difficulty_level` 统计 easy / medium / hard 的 Pass@N 正确题数和正确率
-
 ```bash
-# 1. 启动裁判 vLLM（双卡，端口 6002，后台运行）
+# 1. 启动裁判 vLLM（双卡，端口 6002）
 bash start_judge_vllm.sh -d
 
-# 2. 评分（自动检测 rollout 数量）
-python eval.py --input tests/run_20240101_120000.jsonl
+# 2. 评分
+python eval.py --input tests/run_mahreact_20240101_120000.jsonl
 
-# 自定义输出路径
-python eval.py --input tests/run_20240101_120000.jsonl --output tests/result.json
-
-# 调整并发数（默认 8，裁判调用并行）
-python eval.py --input tests/run_20240101_120000.jsonl --workers 16   # 或 -w 16
-
-# 使用不同的 config
-python eval.py --input tests/run.jsonl --config config.yaml
+# 调整并发数
+python eval.py --input tests/run.jsonl --workers 16
 ```
 
 **输出示例：**
@@ -315,33 +309,10 @@ python eval.py --input tests/run.jsonl --config config.yaml
 Questions  : 100  ×  3 rollouts
 Pass@3     : 58/100  =  58.00%  (≥1 rollout correct)
 Avg.Pass   : 48.33%  (145/300 rollouts correct)
-Unknown    : 3 rollouts  (no gold answer or judge error)
 Difficulty:
-  - easy   : 20/30  =  66.67%  (Pass@3)
-  - medium : 28/50  =  56.00%  (Pass@3)
-  - hard   : 10/20  =  50.00%  (Pass@3)
-```
-
----
-
-### 单条查询（Python 调用）
-
-```python
-# 需先启动 vLLM server：bash start_vllm.sh --port 6001 --gpu 0
-from models.vllm_server_model import VLLMServerModel
-from search.jina_search import JinaSearch
-from search_workflow import SearchWorkflow
-
-llm      = VLLMServerModel(port=6001)   # 连接 vLLM server
-searcher = JinaSearch()
-workflow = SearchWorkflow(llm=llm, searcher=searcher)
-
-result = workflow.run("EU4Health 资助的 SUPPLY 项目是什么时候开始的？")
-
-print(result["answer"])        # 最终答案
-print(result["memory"])        # 最终记忆板状态
-print(result["used_sources"])  # {url: title} 引用来源
-print(result["rounds"])        # 每轮详细 trace
+  - easy   : 20/30  =  66.67%
+  - medium : 28/50  =  56.00%
+  - hard   : 10/20  =  50.00%
 ```
 
 ---
@@ -350,67 +321,34 @@ print(result["rounds"])        # 每轮详细 trace
 
 ### infer.py 输出（`tests/run_*.jsonl`）
 
-每行一条记录，包含该题所有 rollout：
-
 ```json
 {
-  "question": "查询特斯拉的实时股价",
+  "question": "美股七姐妹当前市值之和是多少？",
   "gold_answer": "...",
   "root_url": "",
-  "info": {"domain": "finance", "difficulty_level": "easy"},
+  "info": {"domain": "finance", "difficulty_level": "hard"},
   "rollouts": [
     {
       "rollout_idx": 1,
-      "predicted_answer": "截至今日，特斯拉（TSLA）股价为 ...",
-      "used_sources": {"https://...": "Tesla Stock Price"},
-      "final_memory": "[User Goal]\n...",
-      "num_rounds": 3,
+      "predicted_answer": "七家公司市值之和约为 XX 万亿美元...",
+      "used_sources": {"https://...": "Market Cap Data"},
+      "final_memory": "[Goal]\n...\n[Search History]\n- Q: ... | A: ...",
+      "num_rounds": 8,
       "error": null
-    },
-    {"rollout_idx": 2, ...},
-    {"rollout_idx": 3, ...}
+    }
   ]
 }
 ```
 
-### eval.py 输出（`tests/*_eval.json`）
+### config.yaml 新增字段（v6.0）
 
-```json
-{
-  "summary": {
-    "total_questions": 100,
-    "rollouts_per_q": 3,
-    "pass_at_n": 58,
-    "pass_at_n_pct": "58.00%",
-    "avg_pass": 0.4833,
-    "avg_pass_pct": "48.33%",
-    "total_correct_rollouts": 145,
-    "total_judged_rollouts": 300,
-    "unknown_rollouts": 3,
-    "difficulty_level": {
-      "easy": {
-        "total_questions": 30,
-        "correct_questions": 20,
-        "accuracy": 0.6667,
-        "accuracy_pct": "66.67%"
-      },
-      "medium": {
-        "total_questions": 50,
-        "correct_questions": 28,
-        "accuracy": 0.56,
-        "accuracy_pct": "56.00%"
-      },
-      "hard": {
-        "total_questions": 20,
-        "correct_questions": 10,
-        "accuracy": 0.5,
-        "accuracy_pct": "50.00%"
-      }
-    },
-    "judge_model": "qwen-72b-instruct"
-  },
-  "results": [ ... ]
-}
+```yaml
+eval:
+  hotpot_benchmark_path: "../benchmark/hotpot/hotpot_dev_distractor_v1.jsonl"
+
+limits:
+  max_final_tokens: 4096    # synthesis 阶段 max tokens
+  max_filter_tokens: 512    # filter 阶段 max tokens
 ```
 
 ---
@@ -419,16 +357,14 @@ print(result["rounds"])        # 每轮详细 trace
 
 ### 新增 LLM 后端
 
-1. 在 `models/` 下新建文件，继承 `BaseLLM`
-2. 实现 `generate()` 和 `clear_cache()`
-3. 实例化后传入 `SearchWorkflow(llm=YourModel(), ...)`
+1. 在 `models/` 下继承 `BaseLLM`，实现 `generate()` 和 `clear_cache()`
+2. 在 `infer.py` 中替换 `VLLMServerModel` 实例化
 
 ### 新增搜索后端
 
-1. 在 `search/` 下新建文件，继承 `BaseSearch`
-2. 实现 `search()`，返回 `{"sources": {...}, "error": None}`
-3. 实例化后传入 `SearchWorkflow(searcher=YourSearch(), ...)`
+1. 在 `search/` 下继承 `BaseSearch`，实现 `search()`，返回 `{"sources": {...}, "error": None}`
+2. 在 `infer.py` 中替换 `JinaSearch` 实例化
 
 ### 更换裁判模型
 
-修改 `config.yaml` 的 `judge` 块：`model_path` 指向新模型路径，`model` 填对应名称，重启 `start_judge_vllm.sh` 即可，代码无需改动。
+修改 `config.yaml` 的 `judge` 块，重启 `start_judge_vllm.sh`，无需改代码。
