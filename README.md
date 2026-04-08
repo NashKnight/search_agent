@@ -37,6 +37,8 @@ search_agent/
 │
 ├── search_workflow.py        # SearchWorkflow — 多轮主循环逻辑
 ├── infer.py                  # 推理脚本：多线程并行推理，结果按原始顺序写入 JSONL
+├── infer_base.py             # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
+├── infer_react.py            # 基线推理：Vanilla ReAct（Thought/Action/Observation 循环）
 ├── eval.py                   # 评分脚本：调用裁判模型，计算 accuracy
 └── tests/
     ├── smoke_test.jsonl      # 冒烟测试用例（6 条，无标准答案，用于快速验证流程）
@@ -62,6 +64,8 @@ search_agent/
 | `agent/prompts.py` | 所有 Prompt 以命名常量形式集中存放 |
 | `search_workflow.py` | `SearchWorkflow.run(query)` — 编排完整多轮搜索流程 |
 | `infer.py` | 推理入口：多线程并行推理，tqdm 进度条，结果按原始顺序写入 JSONL |
+| `infer_base.py` | 基线推理：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
+| `infer_react.py` | 基线推理：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search |
 | `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
 | `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
 
@@ -200,7 +204,9 @@ nohup bash start_vllm.sh --port 6001 --gpu 0 > vllm_6001.log 2>&1 &
 
 ---
 
-### Step 2：推理（infer.py）
+### Step 2：推理
+
+#### 主框架（infer.py）——多轮记忆板搜索
 
 连接已启动的 vLLM server，多线程并行推理，结果按原始输入顺序写入 JSONL。
 
@@ -238,6 +244,45 @@ python infer.py \
   --workers 8 \
   --output tests/webwalker_run.jsonl
 ```
+
+#### 基线 A（infer_base.py）——直接问答 / 单跳搜索
+
+输出格式与 `infer.py` 完全一致，可直接送入 `eval.py` 评分。
+
+```bash
+# 纯 LLM 直接问答（无搜索）
+python infer_base.py --port 6001 --onetime
+
+# 单跳 Jina 搜索（搜一次，模型整合后回答）
+python infer_base.py --port 6001 --onetime --jina
+
+# 标准 3 rollout
+python infer_base.py --port 6001 --workers 4 --jina
+```
+
+#### 基线 B（infer_react.py）——Vanilla ReAct
+
+经典 Thought / Action / Observation 格式，仅开放 `Search[query]` 和 `Finish[answer]`，不使用 visit/read，与主框架共享 `max_rounds` 和 Jina 配置。
+
+```bash
+# 单 rollout
+python infer_react.py --port 6001 --onetime
+
+# 限制搜索轮数（对比实验控制变量）
+python infer_react.py --port 6001 --onetime --max-rounds 5
+
+# 标准 3 rollout
+python infer_react.py --port 6001 --workers 4
+```
+
+**三种推理模式一览：**
+
+| 模式 | 脚本 | 搜索 | 记忆板 | 适用场景 |
+|---|---|---|---|---|
+| 纯 LLM | `infer_base.py` | ✗ | ✗ | 模型内部知识基线 |
+| 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | 单跳 RAG 基线 |
+| Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ReAct 框架基线 |
+| 本框架 | `infer.py` | 多轮 | ✓ | 主实验 |
 
 ---
 
