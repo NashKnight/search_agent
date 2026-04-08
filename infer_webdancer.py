@@ -124,28 +124,45 @@ def _search_jina(queries: list[str], api_key: str, proxies: dict | None) -> str:
 
 def _visit_jina(urls: list[str], goal: str, api_key: str, max_chars: int,
                 proxies: dict | None = None) -> str:
-    """Fetch page(s) via Jina Reader and return truncated content."""
+    """Visit page(s) by searching the URL via Jina Search (s.jina.ai).
+
+    Uses the search API instead of the reader API to avoid large token consumption —
+    consistent with how search_workflow.py handles URL-based queries.
+    """
     if not api_key:
         return "[visit] No JINA_API_KEY configured. Set search.jina_api_key in config.yaml."
 
     parts = []
     for url in urls:
+        # Build a targeted query: the URL itself, optionally narrowed by the goal
+        query = url if not goal else f"{url} {goal}"
         try:
             resp = requests.get(
-                f"https://r.jina.ai/{url}",
-                headers={"Authorization": f"Bearer {api_key}"},
+                f"https://s.jina.ai/?q={requests.utils.quote(query)}",
+                headers={"Accept": "application/json",
+                         "Authorization": f"Bearer {api_key}",
+                         "X-Respond-With": "no-content"},
                 proxies=proxies,
-                timeout=30,
+                timeout=15,
             )
-            if resp.status_code == 200:
-                content = resp.text[:max_chars]
-                if len(resp.text) > max_chars:
-                    content += f"\n\n[Content truncated at {max_chars} chars]"
-                parts.append(f"## Content of {url}\n\n{content}")
-            else:
-                parts.append(f"[visit] Failed to fetch {url} (HTTP {resp.status_code})")
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                parts.append(f"[visit] No results found for {url}")
+                continue
+
+            snippets = []
+            for i, item in enumerate(data[:5], 1):
+                title = (item.get("title") or "").strip()
+                link  = (item.get("url") or "").strip()
+                snip  = (item.get("description") or "").strip()
+                snippets.append(f"{i}. [{title}]({link})\n{snip}")
+
+            parts.append(
+                f"## Search results for {url}\n\n" + "\n\n".join(snippets)
+            )
         except Exception as exc:
-            parts.append(f"[visit] Error fetching {url}: {exc}")
+            parts.append(f"[visit] Error for {url}: {exc}")
 
     return "\n\n=======\n\n".join(parts)
 
