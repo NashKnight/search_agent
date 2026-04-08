@@ -2,6 +2,8 @@
 Jina Search API implementation.
 """
 
+import time
+
 import requests
 
 from search.base import BaseSearch
@@ -66,9 +68,14 @@ class JinaSearch(BaseSearch):
         url = f"{self.endpoint}/?q={requests.utils.quote(query)}"
 
         try:
-            resp = requests.get(
-                url, headers=headers, proxies=self.proxies, timeout=12
-            )
+            for attempt in range(3):
+                resp = requests.get(
+                    url, headers=headers, proxies=self.proxies, timeout=12
+                )
+                if resp.status_code == 429 and attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                break
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if not data:

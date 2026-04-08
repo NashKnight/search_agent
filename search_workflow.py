@@ -125,6 +125,7 @@ class SearchWorkflow:
         if m:
             root_url = m.group(1).strip()
         clean_query = re.sub(r"\s*<root_url>.*?</root_url>", "", user_query, flags=re.DOTALL).strip()
+        root_domain: str | None = root_url.split("//")[-1].split("/")[0] if root_url else None
 
         memory_mgr = MemoryManager(self._llm)
         search_queue: deque[str] = deque()
@@ -193,9 +194,8 @@ class SearchWorkflow:
                 search_queue.append(q)
 
         # Move root_url-related queries to the front of the queue
-        if root_url:
-            domain = root_url.split("//")[-1].split("/")[0]
-            priority = [q for q in search_queue if domain in q]
+        if root_domain:
+            priority = [q for q in search_queue if root_domain in q]
             for q in priority:
                 search_queue.remove(q)
                 search_queue.appendleft(q)
@@ -219,9 +219,10 @@ class SearchWorkflow:
 
             current_query = search_queue.popleft()
             searched_queries.add(current_query)
-            log(f"[Searching] {current_query}")
+            site_query = f"{current_query} site:{root_domain}" if root_domain else current_query
+            log(f"[Searching] {site_query}")
 
-            result = self._searcher.search(current_query, max_results=self._max_sources)
+            result = self._searcher.search(site_query, max_results=self._max_sources)
             round_entry: dict = {
                 "round": round_num,
                 "search_query": current_query,
