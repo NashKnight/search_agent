@@ -18,7 +18,6 @@ Usage
 """
 
 import argparse
-import http.client
 import json
 import re
 import time
@@ -83,31 +82,35 @@ _TOKEN_LIMIT_PROMPT = (
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-def _search_serper(queries: list[str], api_key: str) -> str:
-    """Call Google via Serper API for each query, return combined markdown."""
+def _search_jina(queries: list[str], api_key: str, proxies: dict | None) -> str:
+    """Search via Jina Search API (s.jina.ai), return combined markdown."""
     if not api_key:
-        return "[search] No SERPER_API_KEY configured. Set webdancer.serper_api_key in config.yaml."
+        return "[search] No jina_api_key configured. Set search.jina_api_key in config.yaml."
 
     parts = []
     for query in queries:
         try:
-            conn = http.client.HTTPSConnection("google.serper.dev")
-            payload = json.dumps({"q": query, "gl": "us", "hl": "en"})
-            headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-            conn.request("POST", "/search", payload, headers)
-            data = json.loads(conn.getresponse().read().decode("utf-8"))
-
-            if "organic" not in data:
+            url = f"https://s.jina.ai/?q={requests.utils.quote(query)}"
+            resp = requests.get(
+                url,
+                headers={"Accept": "application/json",
+                         "Authorization": f"Bearer {api_key}",
+                         "X-Respond-With": "no-content"},
+                proxies=proxies,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
                 parts.append(f"No results for '{query}'.")
                 continue
 
             snippets = []
-            for i, page in enumerate(data["organic"][:10], 1):
-                title = page.get("title", "")
-                link  = page.get("link", "")
-                snip  = page.get("snippet", "")
-                date  = f"\nDate: {page['date']}" if "date" in page else ""
-                snippets.append(f"{i}. [{title}]({link}){date}\n{snip}")
+            for i, item in enumerate(data[:10], 1):
+                title = (item.get("title") or "").strip()
+                link  = (item.get("url") or "").strip()
+                snip  = (item.get("description") or "").strip()
+                snippets.append(f"{i}. [{title}]({link})\n{snip}")
 
             parts.append(
                 f"Search results for '{query}' ({len(snippets)} results):\n\n"
@@ -119,7 +122,8 @@ def _search_serper(queries: list[str], api_key: str) -> str:
     return "\n\n=======\n\n".join(parts)
 
 
-def _visit_jina(urls: list[str], goal: str, api_key: str, max_chars: int) -> str:
+def _visit_jina(urls: list[str], goal: str, api_key: str, max_chars: int,
+                proxies: dict | None = None) -> str:
     """Fetch page(s) via Jina Reader and return truncated content."""
     if not api_key:
         return "[visit] No JINA_API_KEY configured. Set search.jina_api_key in config.yaml."
@@ -130,6 +134,7 @@ def _visit_jina(urls: list[str], goal: str, api_key: str, max_chars: int) -> str
             resp = requests.get(
                 f"https://r.jina.ai/{url}",
                 headers={"Authorization": f"Bearer {api_key}"},
+                proxies=proxies,
                 timeout=30,
             )
             if resp.status_code == 200:
@@ -238,8 +243,9 @@ def run_single_rollout(record: dict, client: OpenAI, model: str, cfg: dict,
     gold      = record.get("answer", "")
     root_url  = record.get("root_url", "")
 
-    serper_key = cfg.get("webdancer", {}).get("serper_api_key", "")
     jina_key   = cfg.get("search", {}).get("jina_api_key", "")
+    search_cfg = cfg.get("search", {})
+    proxies    = search_cfg.get("proxies") if search_cfg.get("use_proxy") else None
     max_rounds = int(cfg.get("webdancer", {}).get("max_rounds", 50))
     max_tokens = int(cfg.get("webdancer", {}).get("max_new_tokens", 10000))
     max_ctx    = int(cfg.get("webdancer", {}).get("max_context_chars", 400000))
@@ -350,7 +356,7 @@ def run_single_rollout(record: dict, client: OpenAI, model: str, cfg: dict,
                 if isinstance(queries, str):
                     queries = [queries]
                 log(f"[search] {queries}")
-                tool_result = _search_serper(queries, serper_key)
+                tool_result = _search_jina(queries, jina_key, proxies)
 
             elif tool_name == "visit":
                 raw_urls = tool_args.get("url", [])
@@ -358,7 +364,7 @@ def run_single_rollout(record: dict, client: OpenAI, model: str, cfg: dict,
                     raw_urls = [raw_urls]
                 goal        = tool_args.get("goal", "")
                 log(f"[visit] {raw_urls}")
-                tool_result = _visit_jina(raw_urls, goal, jina_key, visit_max)
+                tool_result = _visit_jina(raw_urls, goal, jina_key, visit_max, proxies)
 
             else:
                 tool_result = f"[tool] Unknown tool: {tool_name}"
