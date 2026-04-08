@@ -231,9 +231,9 @@ def _last_think(messages: list[dict]) -> str:
     return last
 
 
-def run_single(record: dict, client: OpenAI, model: str, cfg: dict,
-               trace_path: Path) -> dict:
-    """Run one benchmark record through the ReAct loop."""
+def run_single_rollout(record: dict, client: OpenAI, model: str, cfg: dict,
+                       rollout_idx: int, trace_path: Path) -> dict:
+    """Run ONE rollout for a benchmark record. Returns a rollout-level dict."""
     question  = record["question"]
     gold      = record.get("answer", "")
     root_url  = record.get("root_url", "")
@@ -262,6 +262,7 @@ def run_single(record: dict, client: OpenAI, model: str, cfg: dict,
         trace_lines.append(str(msg))
 
     log("=" * 70)
+    log(f"Rollout  : {rollout_idx}")
     log(f"Question : {question}")
     if gold:
         log(f"Answer   : {gold}")
@@ -386,14 +387,11 @@ def run_single(record: dict, client: OpenAI, model: str, cfg: dict,
         log(f"[Sources]     {len(used_sources)}")
 
         entry = {
-            "question":         question,
-            "gold_answer":      gold,
+            "rollout_idx":      rollout_idx,
             "predicted_answer": prediction,
             "used_sources":     used_sources,
             "final_memory":     _last_think(messages),
             "num_rounds":       num_rounds,
-            "root_url":         root_url,
-            "info":             record.get("info", {}),
             "error":            None,
         }
 
@@ -401,14 +399,11 @@ def run_single(record: dict, client: OpenAI, model: str, cfg: dict,
         tb = traceback.format_exc()
         log(f"\n[ERROR] {exc}\n{tb}")
         entry = {
-            "question":         question,
-            "gold_answer":      gold,
+            "rollout_idx":      rollout_idx,
             "predicted_answer": "",
             "used_sources":     {},
             "final_memory":     "",
             "num_rounds":       num_rounds,
-            "root_url":         root_url,
-            "info":             record.get("info", {}),
             "error":            str(exc),
         }
 
@@ -416,6 +411,24 @@ def run_single(record: dict, client: OpenAI, model: str, cfg: dict,
     trace_path.write_text("\n".join(trace_lines), encoding="utf-8")
 
     return entry
+
+
+def run_record(record: dict, client: OpenAI, model: str, cfg: dict,
+               traces_dir: Path, record_idx: int, rollout_count: int) -> dict:
+    """Run N rollouts for one record, return combined entry (matches infer.py format)."""
+    slug     = _make_slug(record["question"])
+    rollouts = []
+    for r in range(1, rollout_count + 1):
+        trace_path = traces_dir / f"sample_{record_idx:04d}_{slug}_r{r}.txt"
+        rollout    = run_single_rollout(record, client, model, cfg, r, trace_path)
+        rollouts.append(rollout)
+    return {
+        "question":   record["question"],
+        "gold_answer": record.get("answer", ""),
+        "root_url":   record.get("root_url", ""),
+        "info":       record.get("info", {}),
+        "rollouts":   rollouts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -451,11 +464,17 @@ def main():
                         help="vLLM server port (overrides config webdancer.vllm_port)")
     parser.add_argument("--workers",   type=int, default=4,
                         help="Parallel inference threads (default: 4)")
+    parser.add_argument("--rollouts",  type=int, default=3,
+                        help="Rollouts per question for Pass@N evaluation (default: 3)")
+    parser.add_argument("--onetime",   action="store_true",
+                        help="Single rollout mode — equivalent to --rollouts 1")
     parser.add_argument("--limit",     type=int, default=None, help="Max questions to run")
     parser.add_argument("--offset",    type=int, default=0,    help="Skip first N questions")
     parser.add_argument("--output",    default=None,
                         help="Output JSONL path (default: tests/run_wd_<ts>.jsonl)")
     args = parser.parse_args()
+    if args.onetime:
+        args.rollouts = 1
 
     cfg = load_config(args.config)
 
@@ -493,9 +512,10 @@ def main():
     if args.limit is not None:
         records = records[: args.limit]
     tqdm.write(f"Questions to evaluate: {len(records)}")
-    tqdm.write(f"Workers: {args.workers}")
-    tqdm.write(f"Output:  {output_path}")
-    tqdm.write(f"Traces:  {traces_dir}/\n")
+    tqdm.write(f"Workers:  {args.workers}")
+    tqdm.write(f"Rollouts: {args.rollouts} per question")
+    tqdm.write(f"Output:   {output_path}")
+    tqdm.write(f"Traces:   {traces_dir}/\n")
 
     # ── Parallel inference ────────────────────────────────────────────────
     results_by_idx: dict[int, dict] = {}
@@ -503,12 +523,14 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         future_to_idx = {
             executor.submit(
-                run_single,
+                run_record,
                 record,
                 client,
                 model,
                 cfg,
-                traces_dir / f"sample_{idx:04d}_{_make_slug(record['question'])}.txt",
+                traces_dir,
+                idx,
+                args.rollouts,
             ): idx
             for idx, record in enumerate(records)
         }
@@ -523,23 +545,29 @@ def main():
                     record = records[idx]
                     tqdm.write(f"[FATAL] idx={idx}: {exc}")
                     result = {
-                        "question":         record["question"],
-                        "gold_answer":      record.get("answer", ""),
-                        "predicted_answer": "",
-                        "used_sources":     {},
-                        "final_memory":     "",
-                        "num_rounds":       0,
-                        "root_url":         record.get("root_url", ""),
-                        "info":             record.get("info", {}),
-                        "error":            str(exc),
+                        "question":   record["question"],
+                        "gold_answer": record.get("answer", ""),
+                        "root_url":   record.get("root_url", ""),
+                        "info":       record.get("info", {}),
+                        "rollouts":   [{
+                            "rollout_idx":      1,
+                            "predicted_answer": "",
+                            "used_sources":     {},
+                            "final_memory":     "",
+                            "num_rounds":       0,
+                            "error":            str(exc),
+                        }],
                     }
 
                 results_by_idx[idx] = result
-                status = "ERR" if result.get("error") else "OK"
-                n_src  = len(result.get("used_sources", {}))
+                rollouts  = result.get("rollouts", [])
+                n_errors  = sum(1 for ro in rollouts if ro.get("error"))
+                status    = "ERR" if n_errors else "OK"
+                avg_rounds = (sum(ro.get("num_rounds", 0) for ro in rollouts)
+                              / len(rollouts)) if rollouts else 0
                 tqdm.write(
-                    f"[{status}] idx={idx} rounds={result.get('num_rounds', 0)} "
-                    f"sources={n_src} q={result['question'][:55]!r}"
+                    f"[{status}] idx={idx} rollouts={len(rollouts)} "
+                    f"avg_rounds={avg_rounds:.1f} q={result['question'][:55]!r}"
                 )
                 pbar.update(1)
 
@@ -548,11 +576,11 @@ def main():
     with open(output_path, "w", encoding="utf-8") as out_f:
         for idx in range(len(records)):
             result = results_by_idx[idx]
-            if result.get("error"):
+            if any(ro.get("error") for ro in result.get("rollouts", [])):
                 errors += 1
             out_f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
-    tqdm.write(f"\nDone. {len(records)} questions, {errors} errors.")
+    tqdm.write(f"\nDone. {len(records)} questions, {errors} with errors.")
     tqdm.write(f"Results: {output_path}")
 
 
