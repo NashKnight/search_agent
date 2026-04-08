@@ -47,7 +47,7 @@ def _format_sources(sources: dict, used_sources: dict) -> str:
     """Format search result sources for injection into a prompt."""
     if not sources:
         return "[No results available]"
-    lines = ["**Search results:**"]
+    lines = ["**搜索结果:**"]
     for key, val in sources.items():
         desc = val.get("description", "")[:300]
         url = val.get("url", "")
@@ -70,8 +70,8 @@ def _filter_queries(llm: BaseLLM, memory: str, candidates: list[str]) -> list[st
     kept: list[str] = []
     for line in clean.strip().splitlines():
         line = line.strip()
-        if line.upper().startswith("KEEP"):
-            q = re.sub(r"^KEEP\s*[:：]\s*", "", line, flags=re.IGNORECASE).strip()
+        if line.startswith("保留"):
+            q = re.sub(r"^保留\s*[:：]\s*", "", line).strip()
             # fuzzy-match back to original candidates
             for orig in candidates:
                 if (q in orig or orig in q) and orig not in kept:
