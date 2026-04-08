@@ -404,7 +404,7 @@ def run_single_rollout(record: dict, client: OpenAI, model: str, cfg: dict,
             termination = "no_answer_tag"
 
         log("\n" + "=" * 70)
-        log(f"[Prediction]  {prediction[:200]}")
+        log(f"[Prediction]  {prediction}")
         log(f"[Rounds]      {num_rounds}")
         log(f"[Termination] {termination}")
         log(f"[Sources]     {len(used_sources)}")
