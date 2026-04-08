@@ -248,7 +248,7 @@ def run_single(record: dict, client: OpenAI, model: str, cfg: dict,
     presence_penalty  = float(cfg.get("webdancer", {}).get("presence_penalty", 1.1))
 
     today = datetime.now().strftime("%Y-%m-%d")
-    system_prompt = _SYSTEM_PROMPT_BASE.format(date=today)
+    system_prompt = _SYSTEM_PROMPT_BASE.replace("{date}", today)
     user_query    = _build_query(record)
 
     messages: list[dict] = [
