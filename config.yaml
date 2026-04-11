@@ -29,6 +29,7 @@ limits:
 
 eval:
   benchmark_path: "/root/autodl-tmp/benchmark/data/main-00000-of-00001.jsonl"
+  hotpot_benchmark_path: "/root/autodl-tmp/benchmark/hotpotqa/hotpot_dev_distractor_v1.jsonl"
   output_dir: "tests"
   batch_size: 1
 

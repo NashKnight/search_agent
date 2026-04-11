@@ -1,10 +1,6 @@
-# Search Agent 6.0
+# Search Agent
 
-基于 vLLM + Jina Search 构建的多轮搜索智能体。
-
-**v6.0（当前版本）**：`infer.py` 升级为 **MA-HReAct**（Memory-Augmented Hierarchical ReAct）架构。引入三阶段多调用设计（Decomposition → Execution Loop → Synthesis），通过结构化工作记忆（SWM）和显式查询队列实现多跳推理，同时保持每条问题的 context 受控（每次 LLM 调用只看当前 memory + 当前 observation，不传递完整对话历史）。
-
-**v5.1 特性保留**：默认每题跑 3 次 rollout，eval.py 报 Pass@3 和 Avg.Pass，与 WebDancer 评测体系对齐。
+基于 vLLM + Jina Search 构建的多轮搜索智能体，支持结构化记忆板（Memory Board）与多跳推理。
 
 ---
 
@@ -33,15 +29,15 @@ search_agent/
 │   └── __init__.py
 │
 ├── agent/
-│   ├── memory.py             # MemoryManager（v5.x prototype 使用，v6.0 已内联）
-│   ├── prompts.py            # v5.x prompt 模板集中管理
+│   ├── memory.py             # MemoryManager — 跨轮次维护结构化记忆板
+│   ├── prompts.py            # 所有 prompt 模板（中文）
 │   └── __init__.py
 │
-├── search_workflow.py        # v5.x SearchWorkflow 主循环（prototype）
-├── infer.py                  # 主推理脚本：MA-HReAct 三阶段架构（v6.0）
-├── infer_prototype.py        # v5.x prototype 推理脚本（memory board + 队列过滤）
+├── search_workflow.py        # SearchWorkflow — 核心推理循环（多轮搜索 + 记忆板）
+├── infer.py                  # 主推理脚本：调用 SearchWorkflow，并发处理 benchmark
 ├── infer_react.py            # 基线推理：Vanilla ReAct（Thought/Action/Observation 循环）
 ├── infer_base.py             # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
+├── infer_webdancer.py        # 基线推理：WebDancer 兼容（Serper 搜索 + Jina Reader）
 ├── eval.py                   # 评分脚本：调用裁判模型，计算 accuracy
 └── tests/
     ├── smoke_test.jsonl      # 冒烟测试用例（6 条，无标准答案，用于快速验证流程）
@@ -61,10 +57,13 @@ search_agent/
 | `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
 | `models/vllm_server_model.py` | `VLLMServerModel` — 通过 HTTP API 连接 vLLM server（多线程推荐） |
 | `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理 |
-| `infer.py` | **主推理脚本（v6.0）**：MA-HReAct 三阶段多调用架构，支持多跳推理 |
-| `infer_prototype.py` | v5.x prototype：memory board + 队列过滤，多轮 LLM 调用 |
+| `agent/memory.py` | `MemoryManager` — 初始化与更新记忆板（目标 / 计划 / 已知信息 / 待搜索队列） |
+| `agent/prompts.py` | 所有 prompt 模板集中管理（中文） |
+| `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + 记忆板更新 |
+| `infer.py` | 主推理脚本：并发处理 benchmark，每题跑 N 次 rollout，eval.py 报 Pass@N |
 | `infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
 | `infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
+| `infer_webdancer.py` | 基线：WebDancer 兼容推理（Serper 搜索 + Jina Reader 访问页面），输出与 eval.py 对齐 |
 | `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
 | `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
 
@@ -102,9 +101,11 @@ eval:
 limits:
   max_rounds: 15
   max_new_tokens_default: 1536
-  max_final_tokens: 4096
+  max_final_tokens: 8192
+  max_memory_tokens: 1500
   max_filter_tokens: 512
   max_sources_per_search: 5
+  max_formatted_sources_len: 4500
 ```
 
 **评分所需（必填）：**
@@ -119,76 +120,69 @@ judge:
 
 ---
 
-## infer.py（v6.0）推理架构详解
+## 推理架构（SearchWorkflow）
 
-`infer.py` 使用 MA-HReAct（Memory-Augmented Hierarchical ReAct）架构，每个问题的推理流程分为三个阶段，每个 LLM 调用只有单一职责。
+`search_workflow.py` 实现核心推理循环，`infer.py` 是并发 runner，每题调用 `SearchWorkflow.run()`。
 
 ```
 问题 q
 │
-├─ Phase 1: Decomposition（1 次 LLM 调用）
+├─ Round 1: Initial Analysis（1 次 LLM 调用）
 │     输入：问题文本
-│     输出：<goal> + <plan> + 初始 <tool_call> 列表
-│     → 初始化 SWM（goal, plan, 空 history, 初始 pending queue）
-│     → 若模型输出 <finish>，直接返回答案（无需搜索）
+│     输出：<search> 查询列表（或直接回答）
+│     → 若无搜索需求：再调用一次生成直接答案，结束
+│     → 初始化记忆板（goal / plan / 空 history / pending queue）
+│     → LLM 过滤初始查询队列
 │
-├─ Phase 2: Execution Loop（每轮 2 次 LLM 调用）
+├─ Round 2+: Search Loop（每轮 2~3 次 LLM 调用）
 │   LOOP: pending_queue 非空 且 round <= max_rounds
 │   │
-│   ├─ 从 pending_queue 弹出 current_query
-│   ├─ JinaSearch 执行搜索 → observation
-│   │
-│   ├─ Request 2.1: Analysis + Compression（1 次 LLM 调用）
-│   │     输入：SWM + observation
-│   │     输出（必须）：<new_compressed_history>
-│   │     输出（可选）：<tool_call> × N  或  <finish>
-│   │     → 将 key_fact 写入 SWM.compressed_history
-│   │     → 若 <finish>：返回答案，结束
-│   │     → 将新 <tool_call> 加入 pending_queue（精确去重）
-│   │
-│   └─ Request 2.2: Queue Filter（1 次 LLM 调用）
-│         输入：更新后的 SWM（含新 history + 新 pending_queue）
-│         输出：<keep> / <remove> 决策
-│         → 剔除已搜索过的、无关的、重复的查询
-│         → 若全部删除 / <queue_empty/>：进入 Phase 3
+│   ├─ 从队列弹出 current_query
+│   ├─ 相关性检查（1 次 LLM 调用）
+│   │     → 若不相关：跳过本轮，不执行搜索
+│   ├─ Jina Search 执行搜索 → observation
+│   ├─ Analysis（1 次 LLM 调用）
+│   │     输入：记忆板 + 搜索结果
+│   │     输出：分析 + 可选新 <search> 查询
+│   ├─ Queue Re-filter（1 次 LLM 调用）
+│   │     输入：更新后的记忆板 + 全部待搜索查询
+│   │     输出：保留 / 移除决策
+│   └─ 更新记忆板（MemoryManager）
 │
-└─ Phase 3: Synthesis（1 次 LLM 调用）
-      触发条件：pending_queue 为空 或 max_rounds 耗尽
-      输入：完整 SWM（含所有 compressed_history）+ 原始问题
+└─ Final: Synthesis（1 次 LLM 调用）
+      触发条件：队列为空 或 max_rounds 耗尽
+      输入：完整记忆板 + 原始问题
       输出：最终答案
 ```
 
-**SWM（Structured Working Memory）结构：**
+**记忆板（Memory Board）结构：**
 
 ```
-[Goal]
+[User Goal]
 一句话研究目标
 
-[Research Plan]
+[Task Plan]
 1. 步骤一
 2. 步骤二
 ...
 
-[Search History]
-- Q: query1 | A: key facts in 1-2 sentences
-- Q: query2 | A: key facts in 1-2 sentences
-...
+[Collected Information]
+- 已知事实摘要...
 
-[Pending Queue]
+[Pending Searches]
 - pending_query_1
 - pending_query_2
 ```
 
-**关键数据流：**
+**推理模式对比：**
 
-```
-question
-  → [LLM] Decomposition → goal + plan + tool_calls
-       → SWM 初始化，队列填充
-            → LOOP: pop → Jina search → [LLM] Analysis(obs+SWM) → history + new queries
-                        → [LLM] Filter(SWM) → 剪枝队列
-                              → 队列空 or max_rounds → [LLM] Synthesis(SWM) → answer
-```
+| 模式 | 脚本 | 搜索 | 结构化记忆 | 多跳规划 | Context 控制 |
+|---|---|---|---|---|---|
+| 纯 LLM | `infer_base.py` | ✗ | ✗ | ✗ | — |
+| 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | ✗ | — |
+| Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ✗ | 全历史累积 |
+| WebDancer | `infer_webdancer.py` | 多轮 | ✗ | ✗ | 全历史累积 |
+| **Memory-Augmented** | `infer.py` | 多轮 | ✓ | ✓ | 记忆板（受控） |
 
 ---
 
@@ -215,7 +209,9 @@ nohup bash start_vllm.sh --port 6001 --gpu 0 > vllm_6001.log 2>&1 &
 
 ### Step 2：推理
 
-#### 主框架（infer.py）—— MA-HReAct 三阶段架构
+所有推理脚本的 `--benchmark` 参数均接受：`'hotpot'`、`'webwalker'`（从 config.yaml 读路径）或具体文件路径。
+
+#### 主框架（infer.py）—— Memory-Augmented Multi-Round Search
 
 ```bash
 # 冒烟测试（6 条，快速验证流程）
@@ -224,7 +220,7 @@ python infer.py --benchmark tests/smoke_test.jsonl --onetime
 # WebWalker benchmark（从 config.yaml 读路径，3 rollout）
 python infer.py
 
-# HotpotQA benchmark（多跳推理专项测试）
+# HotpotQA benchmark
 python infer.py --benchmark hotpot
 
 # 单次 rollout
@@ -272,22 +268,14 @@ python infer_base.py --port 6001 --onetime
 python infer_base.py --port 6001 --onetime --jina
 ```
 
-#### 基线 C（infer_prototype.py）—— v5.x prototype
+#### 基线 C（infer_webdancer.py）—— WebDancer
 
 ```bash
-python infer_prototype.py --port 6001 --onetime
-python infer_prototype.py --port 6001 --workers 4
+# 需要在 config.yaml 中配置 webdancer.serper_api_key
+python infer_webdancer.py --port 6001 --onetime
+python infer_webdancer.py --port 6001 --workers 8 --limit 20
+python infer_webdancer.py --port 6001 --benchmark hotpot --onetime
 ```
-
-**推理模式对比：**
-
-| 模式 | 脚本 | 搜索 | 结构化记忆 | 多跳规划 | Context 控制 |
-|---|---|---|---|---|---|
-| 纯 LLM | `infer_base.py` | ✗ | ✗ | ✗ | — |
-| 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | ✗ | — |
-| Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ✗ | 全历史累积 |
-| Prototype (v5.x) | `infer_prototype.py` | 多轮 | ✓ | 部分 | 全历史累积 |
-| **MA-HReAct (v6.0)** | `infer.py` | 多轮 | ✓ | ✓ | 受控（仅当前轮） |
 
 ---
 
@@ -298,7 +286,7 @@ python infer_prototype.py --port 6001 --workers 4
 bash start_judge_vllm.sh -d
 
 # 2. 评分
-python eval.py --input tests/run_mahreact_20240101_120000.jsonl
+python eval.py --input tests/run_20240101_120000.jsonl
 
 # 调整并发数
 python eval.py --input tests/run.jsonl --workers 16
@@ -323,8 +311,11 @@ Difficulty:
 
 ```json
 {
+  "id": "webwalker_001",
   "question": "美股七姐妹当前市值之和是多少？",
   "gold_answer": "...",
+  "type": "factual",
+  "level": "hard",
   "root_url": "",
   "info": {"domain": "finance", "difficulty_level": "hard"},
   "rollouts": [
@@ -332,23 +323,12 @@ Difficulty:
       "rollout_idx": 1,
       "predicted_answer": "七家公司市值之和约为 XX 万亿美元...",
       "used_sources": {"https://...": "Market Cap Data"},
-      "final_memory": "[Goal]\n...\n[Search History]\n- Q: ... | A: ...",
+      "final_memory": "[User Goal]\n...\n[Collected Information]\n...",
       "num_rounds": 8,
       "error": null
     }
   ]
 }
-```
-
-### config.yaml 新增字段（v6.0）
-
-```yaml
-eval:
-  hotpot_benchmark_path: "../benchmark/hotpot/hotpot_dev_distractor_v1.jsonl"
-
-limits:
-  max_final_tokens: 4096    # synthesis 阶段 max tokens
-  max_filter_tokens: 512    # filter 阶段 max tokens
 ```
 
 ---
@@ -363,7 +343,7 @@ limits:
 ### 新增搜索后端
 
 1. 在 `search/` 下继承 `BaseSearch`，实现 `search()`，返回 `{"sources": {...}, "error": None}`
-2. 在 `infer.py` 中替换 `JinaSearch` 实例化
+2. 在 `search_workflow.py` 中替换 `JinaSearch` 实例化
 
 ### 更换裁判模型
 

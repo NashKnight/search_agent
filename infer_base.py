@@ -231,8 +231,11 @@ def run_record(
         rollouts.append(rollout)
 
     return {
+        "id":          record.get("id", ""),
         "question":    record["question"],
         "gold_answer": record.get("answer", ""),
+        "type":        record.get("type", ""),
+        "level":       record.get("level", ""),
         "root_url":    record.get("root_url", ""),
         "info":        record.get("info", {}),
         "rollouts":    rollouts,
@@ -248,7 +251,8 @@ def main() -> None:
         description="Run single-pass baseline inference on a JSONL benchmark."
     )
     parser.add_argument("--config",    default=None,  help="Path to config.yaml")
-    parser.add_argument("--benchmark", default=None,  help="Override benchmark JSONL path")
+    parser.add_argument("--benchmark", default=None,
+                        help="'hotpot', 'webwalker', or a file path (default: webwalker from config)")
     parser.add_argument("--port",      type=int, default=None, help="vLLM server port (overrides config)")
     parser.add_argument("--workers", "-w", type=int, default=4, help="Parallel inference threads")
     parser.add_argument("--limit",     type=int, default=None, help="Max number of questions")
@@ -269,10 +273,13 @@ def main() -> None:
     # ── Config & paths ────────────────────────────────────────────────────────
     config = load_config(args.config)
 
-    project_root   = Path(__file__).parent
-    benchmark_path = Path(args.benchmark) if args.benchmark else (
-        project_root / config["eval"]["benchmark_path"]
-    )
+    project_root = Path(__file__).parent
+    if args.benchmark == "hotpot":
+        benchmark_path = Path(config["eval"]["hotpot_benchmark_path"])
+    elif args.benchmark and args.benchmark != "webwalker":
+        benchmark_path = Path(args.benchmark)
+    else:
+        benchmark_path = project_root / config["eval"]["benchmark_path"]
     output_dir = project_root / config["eval"]["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -288,6 +295,9 @@ def main() -> None:
     # ── Load benchmark ────────────────────────────────────────────────────────
     tqdm.write(f"Loading benchmark: {benchmark_path}")
     records = load_benchmark(benchmark_path)
+    if args.benchmark == "hotpot":
+        _drop = {"supporting_facts", "context"}
+        records = [{k: v for k, v in r.items() if k not in _drop} for r in records]
     records = records[args.offset:]
     if args.limit is not None:
         records = records[: args.limit]
@@ -335,8 +345,11 @@ def main() -> None:
                     record = records[idx]
                     tqdm.write(f"[FATAL] idx={idx} q={record['question'][:60]!r}: {exc}")
                     result = {
+                        "id":          record.get("id", ""),
                         "question":    record["question"],
                         "gold_answer": record.get("answer", ""),
+                        "type":        record.get("type", ""),
+                        "level":       record.get("level", ""),
                         "root_url":    record.get("root_url", ""),
                         "info":        record.get("info", {}),
                         "rollouts": [{
