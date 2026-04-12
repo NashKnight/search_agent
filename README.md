@@ -127,38 +127,50 @@ judge:
 ```
 问题 q
 │
-├─ Round 1: Initial Analysis（1 次 LLM 调用）
-│     输入：问题文本
-│     输出：<search> 查询列表（或直接回答）
-│     → 若无搜索需求：再调用一次生成直接答案，结束
-│     → 初始化记忆板（goal / plan / 空 history / pending queue）
-│     → LLM 过滤初始查询队列
+├─ Round 1: Initial Analysis（2 次 LLM 调用）
+│     [LLM call 1] 分析问题 → 提取 <search> 查询列表
+│     → 若无搜索需求：[LLM call 2] 直接生成答案，结束
+│     → [MemoryManager.initialize()] 创建记忆板：
+│           [Global Query]      ← 根据问题生成研究目标
+│           [Task Plan]         ← 生成分步计划
+│           [History Information] ← 初始为空
+│           [Pending Queue]     ← 填入本轮提取的查询
+│     [LLM call 2] _filter_queries() 过滤初始队列
+│           → 只影响 search_queue，不更新记忆板
 │
-├─ Round 2+: Search Loop（每轮 2~3 次 LLM 调用）
-│   LOOP: pending_queue 非空 且 round <= max_rounds
+├─ Round 2+: Search Loop（每轮 3~4 次 LLM 调用）
+│   LOOP: [Pending Queue] 非空 且 round ≤ max_rounds
 │   │
-│   ├─ 从队列弹出 current_query
-│   ├─ 相关性检查（1 次 LLM 调用）
-│   │     → 若不相关：跳过本轮，不执行搜索
-│   ├─ Jina Search 执行搜索 → observation
-│   ├─ Analysis（1 次 LLM 调用）
+│   ├─ 从 [Pending Queue] 弹出 current_query
+│   ├─ [LLM call 1] 相关性检查（FILTER_QUERIES_PROMPT）
+│   │     → 若不相关：跳过，记忆板不更新
+│   ├─ Jina Search 执行搜索 → sources
+│   ├─ [LLM call 2] Analysis（ANALYSIS_PROMPT）
 │   │     输入：记忆板 + 搜索结果
-│   │     输出：分析 + 可选新 <search> 查询
-│   ├─ Queue Re-filter（1 次 LLM 调用）
-│   │     输入：更新后的记忆板 + 全部待搜索查询
+│   │     输出：分析结论 + 可选新 <search> 查询
+│   │     → 若队列已空且无新查询：直接返回本轮答案（跳过 Synthesis）
+│   ├─ [MemoryManager.update() — pass 1] 临时更新记忆板：
+│   │     [History Information] += {Query: current_query, Response: 关键事实}
+│   │     [Pending Queue]       = remaining_queue + new_queries（未过滤）
+│   ├─ [LLM call 3] Queue re-filter（FILTER_QUERIES_PROMPT）
+│   │     输入：临时记忆板 + 全部候选查询
 │   │     输出：保留 / 移除决策
-│   └─ 更新记忆板（MemoryManager）
+│   └─ [MemoryManager.update() — pass 2] 最终更新记忆板：
+│         [History Information] ← 保持 pass 1 结果不变
+│         [Pending Queue]       = 过滤后的队列
+│         [Global Query] / [Task Plan] ← 始终不变
 │
 └─ Final: Synthesis（1 次 LLM 调用）
-      触发条件：队列为空 或 max_rounds 耗尽
-      输入：完整记忆板 + 原始问题
-      输出：最终答案
+      触发条件：max_rounds 耗尽（正常收敛时在 Search Loop 内直接返回）
+      [LLM call] FINAL_ANSWER_PROMPT
+            输入：完整记忆板（含全部 [History Information]）+ 原始问题
+            输出：最终答案
 ```
 
 **记忆板（Memory Board）结构：**
 
 ```
-[User Goal]
+[Global Query]
 一句话研究目标
 
 [Task Plan]
@@ -166,12 +178,14 @@ judge:
 2. 步骤二
 ...
 
-[Collected Information]
-- 已知事实摘要...
+[History Information]
+- Query: <搜索词>
+  Response: <核心事实摘要>
+- Query: <搜索词>
+  Response: <核心事实摘要>
 
-[Pending Searches]
-- pending_query_1
-- pending_query_2
+[Pending Queue]
+Current queue: query_1, query_2, ...
 ```
 
 **推理模式对比：**
@@ -323,7 +337,7 @@ Difficulty:
       "rollout_idx": 1,
       "predicted_answer": "七家公司市值之和约为 XX 万亿美元...",
       "used_sources": {"https://...": "Market Cap Data"},
-      "final_memory": "[User Goal]\n...\n[Collected Information]\n...",
+      "final_memory": "[Global Query]\n...\n[History Information]\n...",
       "num_rounds": 8,
       "error": null
     }
