@@ -30,14 +30,14 @@ BASE_PROMPT = (
 MEMORY_INIT_PROMPT = (
     "用户问题：{user_query}\n\n"
     "创建任务信息板（严格按以下格式，不要 <think> 标签）：\n\n"
-    "【用户目标】\n"
+    "[Global Query]\n"
     "一句话说明用户想要什么\n\n"
-    "【任务规划】\n"
+    "[Task Plan]\n"
     "列出需要完成的步骤，以及最后如何汇总信息\n\n"
-    "【当前已搜集信息】\n"
+    "[History Information]\n"
     "（初始为空，后续每次搜索后更新）\n\n"
-    "【待搜索信息】\n"
-    "当前排队查询：{pending_queries}\n\n"
+    "[Pending Queue]\n"
+    "Current queue: {pending_queries}\n\n"
     "要求：简洁清晰，直接输出信息板，不要思考过程。"
 )
 
@@ -48,26 +48,26 @@ MEMORY_UPDATE_PROMPT = (
     "结果摘要：{search_results}\n\n"
     "待搜索队列：{pending_queue}\n\n"
     "更新信息板：\n"
-    "1. 在【当前已搜集信息】中添加：\n"
-    "   - 查询：{search_query}\n"
-    "   - 关键信息：（提取核心数字/事实，20-50字）\n"
-    "2. 更新【待搜索信息】为当前队列\n"
-    "3. **绝对不要大幅删除或简化【当前已搜集信息】中的已有条目**\n"
-    "4. **保持【用户目标】和【任务规划】完全不变**\n\n"
+    "1. 在[History Information]中添加：\n"
+    "   - Query: {search_query}\n"
+    "   - Response: （提取核心数字/事实，20-50字）\n"
+    "2. 更新[Pending Queue]为当前队列\n"
+    "3. **绝对不要大幅删除或简化[History Information]中的已有条目**\n"
+    "4. **保持[Global Query]和[Task Plan]完全不变**\n\n"
     "直接输出完整更新后的信息板，保持原格式。"
 )
 
 MEMORY_UPDATE_QUEUE_ONLY_PROMPT = (
     "当前信息板：\n{memory}\n\n"
     "新的待搜索队列：{pending_queue}\n\n"
-    "任务：只更新【待搜索信息】部分为新队列，其他部分保持不变。\n\n"
+    "任务：只更新[Pending Queue]部分为新队列，其他部分保持不变。\n\n"
     "直接输出完整信息板："
 )
 
 FILTER_QUERIES_PROMPT = (
     "信息板：\n{memory}\n\n"
     "待审查的查询词列表：\n{query_list}\n\n"
-    "任务：快速判断每个查询词是否对【用户目标】有帮助\n\n"
+    "任务：快速判断每个查询词是否对[Global Query]有帮助\n\n"
     "判断标准：\n"
     "保留：概念查询（名单/是什么/有哪些）、数据查询（股价/天气/排名）\n"
     "删除：完全无关领域、已搜集的重复内容\n\n"
@@ -93,10 +93,10 @@ ANALYSIS_PROMPT = (
 FINAL_ANSWER_PROMPT = (
     "完整信息板：\n{memory}\n\n"
     "用户问题：{user_query}\n\n"
-    "任务：根据信息板中【当前已搜集信息】给出完整准确的答案。\n"
+    "任务：根据信息板中[History Information]给出完整准确的答案。\n"
     "要求：\n"
     "1. 直接回答，不要输出 <search> 标签\n"
-    "2. 包含【当前已搜集信息】中所有关键数据\n"
+    "2. 包含[History Information]中所有关键数据\n"
     "3. 适当标注来源\n\n"
     "开始："
 )
