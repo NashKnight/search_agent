@@ -4,9 +4,9 @@ through the multi-round search + memory loop.
 
 Architecture
 ------------
-Round 1  : Initial analysis → extract queries → init memory → filter queue
-Round 2+ : Pop query → search → analyse results → update memory → filter queue
-Final    : Generate answer from memory (triggered when queue empties or max_rounds hit)
+Round 1        : Initial Analysis → [Req 2] Bootstrap (init Dynamic Memory + filter queue)
+Round 2+       : Search Loop — [Req 1] Relevance Check → Jina Search → [Req 2] Memory Update → [Req 3] Queue Filtering
+Final Round    : Generate Answer (triggered when queue empties or max_rounds hit)
 """
 
 import re
@@ -60,7 +60,7 @@ def _format_sources(sources: dict, used_sources: dict) -> str:
 
 
 def _filter_queries(llm: BaseLLM, memory: str, candidates: list[str]) -> list[str]:
-    """Ask the LLM to keep only queries relevant to the memory's [User Goal]."""
+    """Ask the LLM to keep only queries relevant to the memory's [Global Query]."""
     if not candidates:
         return []
     numbered = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(candidates))
@@ -134,9 +134,9 @@ class SearchWorkflow:
         used_sources: dict[str, str] = {}
         rounds: list[dict] = []
 
-        # ── Round 1: initial analysis ─────────────────────────────────────
+        # ── Round 1: Initial Analysis ─────────────────────────────────────
         log("=" * 70)
-        log("=== Round 1: Initial analysis ===")
+        log("=== Round 1: Initial Analysis ===")
         if root_url:
             log(f"[root_url detected] {root_url}")
 
@@ -169,7 +169,7 @@ class SearchWorkflow:
         }
 
         if not buffer:
-            log("[No search needed — generating direct answer]")
+            log("[Need Search? No — entering Final Round: Generate Answer]")
             direct_prompt = DIRECT_ANSWER_PROMPT.format(user_query=clean_query)
             _, _, direct_clean = self._llm.generate(direct_prompt, max_new_tokens=self._max_new_tokens)
             answer = _clean_final(direct_clean)
@@ -184,7 +184,7 @@ class SearchWorkflow:
                 "rounds": rounds,
             }
         memory = memory_mgr.initialize(clean_query, buffer)
-        log(f"\n[Memory initialized]\n{memory}\n")
+        log(f"\n[Req 2 Bootstrap — Dynamic Memory initialized]\n{memory}\n")
 
         filtered = _filter_queries(self._llm, memory, buffer)
         log(f"[Filtered queries] {filtered}")
@@ -210,7 +210,7 @@ class SearchWorkflow:
         if not search_queue:
             return {"answer": _clean_final(clean), "memory": memory, "used_sources": used_sources, "rounds": rounds}
 
-        # ── Round 2+: search loop ─────────────────────────────────────────
+        # ── Round 2+: Search Loop ─────────────────────────────────────────
         round_num = 2
         while search_queue and round_num <= max_rounds:
             log(f"\n{'=' * 70}")
@@ -262,7 +262,7 @@ class SearchWorkflow:
                 continue
 
             search_history.append({"query": current_query, "results": formatted})
-            log("[Relevant — analysing results]")
+            log("[Relevant — running Memory Update]")
 
             # Ask LLM to analyse new results against memory
             analysis_prompt = ANALYSIS_PROMPT.format(
@@ -284,7 +284,7 @@ class SearchWorkflow:
             new_queries = _extract_search_queries(raw)
             log(f"[New queries extracted] {new_queries}")
 
-            # Merge queue + new queries, re-filter everything
+            # [Req 3] Queue Filtering — merge queue + new queries, re-filter everything
             all_pending = list(search_queue) + new_queries
             # Temporarily update memory to help the filter judge new queries
             temp_memory = memory_mgr.update(
@@ -327,9 +327,9 @@ class SearchWorkflow:
 
             round_num += 1
 
-        # ── Forced final answer generation ────────────────────────────────
+        # ── Final Round: Generate Answer ──────────────────────────────────
         log(f"\n{'=' * 70}")
-        log("=== Final answer generation ===")
+        log("=== Final Round: Generate Answer ===")
         memory = memory_mgr.get()
         final_prompt = FINAL_ANSWER_PROMPT.format(
             memory=memory, user_query=clean_query

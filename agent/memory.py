@@ -1,8 +1,8 @@
 """
-Memory manager — maintains the global task memory board across search rounds.
+Memory manager — maintains the Dynamic Memory across search rounds.
 
-The memory board replaces the original Chinese "全局信息板" (global info board)
-and tracks: user goal, task plan, collected information, and pending searches.
+Dynamic Memory replaces the original Chinese "全局信息板" (global info board)
+and tracks: Global Query, Task Plan, History Information, and Pending Queue.
 """
 
 import re
@@ -17,7 +17,7 @@ from agent.prompts import (
 
 
 class MemoryManager:
-    """Maintains and updates the structured memory board throughout a search session."""
+    """Maintains and updates the Dynamic Memory throughout a search session."""
 
     def __init__(self, llm: BaseLLM, config: dict | None = None):
         if config is None:
@@ -31,7 +31,7 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     def initialize(self, user_query: str, pending_queries: list[str]) -> str:
-        """Create an empty memory board for a new search session."""
+        """[Req 2] Bootstrap — create an empty Dynamic Memory for a new search session."""
         prompt = MEMORY_INIT_PROMPT.format(
             user_query=user_query,
             pending_queries=", ".join(pending_queries) if pending_queries else "none",
@@ -46,7 +46,7 @@ class MemoryManager:
         pending_queue: list[str],
         last_search_relevant: bool = True,
     ) -> str:
-        """Update the memory board after a search round.
+        """[Req 2] Memory Update — update the Dynamic Memory after a search round.
 
         Args:
             search_history: All search records so far, each ``{"query": str, "results": str}``.

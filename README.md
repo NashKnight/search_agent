@@ -1,6 +1,6 @@
 # Search Agent
 
-基于 vLLM + Jina Search 构建的多轮搜索智能体，支持结构化记忆板（Memory Board）与多跳推理。
+基于 vLLM + Jina Search 构建的多轮搜索智能体，支持结构化 Dynamic Memory 与多跳推理。
 
 ---
 
@@ -29,11 +29,11 @@ search_agent/
 │   └── __init__.py
 │
 ├── agent/
-│   ├── memory.py             # MemoryManager — 跨轮次维护结构化记忆板
+│   ├── memory.py             # MemoryManager — 跨轮次维护 Dynamic Memory
 │   ├── prompts.py            # 所有 prompt 模板（中文）
 │   └── __init__.py
 │
-├── search_workflow.py        # SearchWorkflow — 核心推理循环（多轮搜索 + 记忆板）
+├── search_workflow.py        # SearchWorkflow — 核心推理循环（多轮搜索 + Dynamic Memory）
 ├── infer.py                  # 主推理脚本：调用 SearchWorkflow，并发处理 benchmark
 ├── infer_react.py            # 基线推理：Vanilla ReAct（Thought/Action/Observation 循环）
 ├── infer_base.py             # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
@@ -57,9 +57,9 @@ search_agent/
 | `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
 | `models/vllm_server_model.py` | `VLLMServerModel` — 通过 HTTP API 连接 vLLM server（多线程推荐） |
 | `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理 |
-| `agent/memory.py` | `MemoryManager` — 初始化与更新记忆板（目标 / 计划 / 已知信息 / 待搜索队列） |
+| `agent/memory.py` | `MemoryManager` — 初始化与更新 Dynamic Memory（Global Query / Task Plan / History Information / Pending Queue） |
 | `agent/prompts.py` | 所有 prompt 模板集中管理（中文） |
-| `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + 记忆板更新 |
+| `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + Dynamic Memory 更新 |
 | `infer.py` | 主推理脚本：并发处理 benchmark，每题跑 N 次 rollout，eval.py 报 Pass@N |
 | `infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
 | `infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
@@ -127,47 +127,46 @@ judge:
 ```
 问题 q
 │
-├─ Round 1: Initial Analysis（2 次 LLM 调用）
-│     [LLM call 1] 分析问题 → 提取 <search> 查询列表
-│     → 若无搜索需求：[LLM call 2] 直接生成答案，结束
-│     → [MemoryManager.initialize()] 创建记忆板：
-│           [Global Query]      ← 根据问题生成研究目标
-│           [Task Plan]         ← 生成分步计划
+├─ Round 1: Initial Analysis
+│     [Req 1] Initial Analysis → 提取 <search> 查询列表
+│     → 若无搜索需求（Need Search? No）：Final Round: [Req 1] Generate Answer，结束
+│     → [Req 2] Bootstrap — MemoryManager.initialize() 创建 Dynamic Memory：
+│           [Global Query]        ← 根据问题生成研究目标
+│           [Task Plan]           ← 生成分步计划
 │           [History Information] ← 初始为空
-│           [Pending Queue]     ← 填入本轮提取的查询
-│     [LLM call 2] _filter_queries() 过滤初始队列
-│           → 只影响 search_queue，不更新记忆板
+│           [Pending Queue]       ← 填入本轮提取的查询
+│     → 过滤初始队列（只影响 search_queue，不更新 Dynamic Memory）
 │
 ├─ Round 2+: Search Loop（每轮 3~4 次 LLM 调用）
-│   LOOP: [Pending Queue] 非空 且 round ≤ max_rounds
+│   LOOP: [Pending Queue] 非空 且 round ≤ max_rounds（Queue Empty OR Max Rounds?）
 │   │
 │   ├─ 从 [Pending Queue] 弹出 current_query
-│   ├─ [LLM call 1] 相关性检查（FILTER_QUERIES_PROMPT）
-│   │     → 若不相关：跳过，记忆板不更新
-│   ├─ Jina Search 执行搜索 → sources
-│   ├─ [LLM call 2] Analysis（ANALYSIS_PROMPT）
-│   │     输入：记忆板 + 搜索结果
+│   ├─ [Req 1] Relevance Check（FILTER_QUERIES_PROMPT）
+│   │     → Relevant? No：跳过，Dynamic Memory 不更新
+│   ├─ [Tool Call] Jina Search → sources
+│   ├─ Analysis（ANALYSIS_PROMPT）
+│   │     输入：Dynamic Memory + 搜索结果
 │   │     输出：分析结论 + 可选新 <search> 查询
-│   │     → 若队列已空且无新查询：直接返回本轮答案（跳过 Synthesis）
-│   ├─ [MemoryManager.update() — pass 1] 临时更新记忆板：
+│   │     → 若队列已空且无新查询：直接返回本轮答案（进入 Final Round）
+│   ├─ [Req 2] Memory Update（pass 1 — temp）：
 │   │     [History Information] += {Query: current_query, Response: 关键事实}
 │   │     [Pending Queue]       = remaining_queue + new_queries（未过滤）
-│   ├─ [LLM call 3] Queue re-filter（FILTER_QUERIES_PROMPT）
-│   │     输入：临时记忆板 + 全部候选查询
+│   ├─ [Req 3] Queue Filtering（FILTER_QUERIES_PROMPT）
+│   │     输入：temp Dynamic Memory + 全部候选查询
 │   │     输出：保留 / 移除决策
-│   └─ [MemoryManager.update() — pass 2] 最终更新记忆板：
+│   └─ [Req 2] Memory Update（pass 2 — final）：
 │         [History Information] ← 保持 pass 1 结果不变
 │         [Pending Queue]       = 过滤后的队列
 │         [Global Query] / [Task Plan] ← 始终不变
 │
-└─ Final: Synthesis（1 次 LLM 调用）
+└─ Final Round（1 次 LLM 调用）
       触发条件：max_rounds 耗尽（正常收敛时在 Search Loop 内直接返回）
-      [LLM call] FINAL_ANSWER_PROMPT
-            输入：完整记忆板（含全部 [History Information]）+ 原始问题
+      [Req 1] Generate Answer（FINAL_ANSWER_PROMPT）
+            输入：完整 Dynamic Memory（含全部 [History Information]）+ 原始问题
             输出：最终答案
 ```
 
-**记忆板（Memory Board）结构：**
+**Dynamic Memory 结构：**
 
 ```
 [Global Query]
@@ -196,7 +195,7 @@ Current queue: query_1, query_2, ...
 | 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | ✗ | — |
 | Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ✗ | 全历史累积 |
 | WebDancer | `infer_webdancer.py` | 多轮 | ✗ | ✗ | 全历史累积 |
-| **Memory-Augmented** | `infer.py` | 多轮 | ✓ | ✓ | 记忆板（受控） |
+| **Search Agent (Ours)** | `infer.py` | 多轮 | ✓ | ✓ | Dynamic Memory（受控） |
 
 ---
 
