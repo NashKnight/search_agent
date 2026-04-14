@@ -211,7 +211,7 @@ def run_single_rollout(
             if action is None:
                 log("[No valid action found — treating output as final answer]")
                 answer = clean or raw
-                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "assistant", "content": clean})
                 done = True
                 break
 
@@ -220,7 +220,7 @@ def run_single_rollout(
             if action_type == "finish":
                 answer = action_arg
                 log(f"[Finish] {answer}")
-                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "assistant", "content": clean})
                 done = True
                 break
 
@@ -238,8 +238,8 @@ def run_single_rollout(
             log(obs_text)
             log()
 
-            # Append assistant turn (Thought + Action, cut at stop sequence)
-            messages.append({"role": "assistant", "content": raw})
+            # Append assistant turn with think-stripped content to prevent context explosion
+            messages.append({"role": "assistant", "content": clean})
             # Append user turn: Observation + prompt for next Thought
             messages.append({
                 "role": "user",
