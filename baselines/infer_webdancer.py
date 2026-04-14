@@ -20,12 +20,15 @@ Usage
 import argparse
 import json
 import re
+import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
 from openai import OpenAI

@@ -18,10 +18,13 @@ Usage
 import argparse
 import json
 import re
+import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tqdm import tqdm
 
