@@ -504,7 +504,7 @@ def main():
 
     cfg = load_config(args.config)
 
-    project_root   = Path(__file__).parent
+    project_root   = Path(__file__).parent.parent
     benchmark_path = Path(args.benchmark) if args.benchmark else (
         project_root / cfg["eval"]["benchmark_path"]
     )
