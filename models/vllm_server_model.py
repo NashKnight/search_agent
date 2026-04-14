@@ -3,7 +3,7 @@ vLLM server-backed LLM — connects to a running vLLM OpenAI-compatible endpoint
 instead of loading the model in-process.
 
 Start the server first:
-    bash start_vllm.sh --port 6001 --gpu 0
+    bash commands/start_vllm.sh --port 6001 --gpu 0
 """
 
 from openai import OpenAI

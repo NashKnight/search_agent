@@ -7,7 +7,7 @@ and extracts used_sources from the conversation history so eval.py can include s
 URLs in the judge prompt — the same way it evaluates search_agent outputs.
 
 Requires:
-  - vLLM server running with WebDancer (bash start_vllm.sh -d)
+  - vLLM server running with WebDancer (bash commands/start_vllm.sh -d)
   - config.yaml: webdancer.serper_api_key and search.jina_api_key
 
 Usage
@@ -504,7 +504,7 @@ def main():
 
     cfg = load_config(args.config)
 
-    project_root   = Path(__file__).parent.parent
+    project_root   = Path(__file__).resolve().parent.parent
     benchmark_path = Path(args.benchmark) if args.benchmark else (
         project_root / cfg["eval"]["benchmark_path"]
     )

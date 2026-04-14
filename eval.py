@@ -1,7 +1,7 @@
 """
 Evaluation script — reads infer.py output and scores predictions with a local judge model.
 
-The judge is a vLLM server on port 6002 (start with: bash start_judge_vllm.sh -d).
+The judge is a vLLM server on port 6002 (start with: bash commands/start_judge_vllm.sh -d).
 Uses JUDGE_PROMPT_GAIA style: judge sees question, gold answer, predicted answer,
 and source URLs as auxiliary context.
 
@@ -75,7 +75,7 @@ class JudgeClient:
             except Exception:
                 raise RuntimeError(
                     "Judge model not set in config.yaml and server unreachable. "
-                    "Start judge vLLM: bash start_judge_vllm.sh -d"
+                    "Start judge vLLM: bash commands/start_judge_vllm.sh -d"
                 )
 
     def judge(self, question: str, gold_answer: str, predicted_answer: str,

@@ -276,7 +276,7 @@ def main() -> None:
     # ── Config & paths ────────────────────────────────────────────────────────
     config = load_config(args.config)
 
-    project_root = Path(__file__).parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     if args.benchmark == "hotpot":
         benchmark_path = Path(config["eval"]["hotpot_benchmark_path"])
     elif args.benchmark and args.benchmark != "webwalker":

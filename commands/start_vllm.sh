@@ -1,31 +1,32 @@
 #!/bin/bash
-# start_judge_vllm.sh — Start the judge vLLM server (2-GPU, port 6002).
+# start_vllm.sh — Start a vLLM OpenAI-compatible server.
 #
 # Usage:
-#   bash start_judge_vllm.sh [OPTIONS]
-#   bash start_judge_vllm.sh --stop          # stop background judge server
-#   bash start_judge_vllm.sh --logs          # tail judge server logs
+#   bash commands/start_vllm.sh [OPTIONS]
+#   bash commands/start_vllm.sh --stop          # stop background server
+#   bash commands/start_vllm.sh --logs          # tail server logs
 #
 # Options:
-#   --port      PORT   Port to listen on         (default: 6002)
-#   --model/-m  PATH   Model path                (default: from config.yaml judge.model_path)
-#   --gpu/-g    IDS    CUDA_VISIBLE_DEVICES      (default: 0,1)
-#   --tp        N      tensor-parallel-size      (default: 2)
+#   --port/-p   PORT   Port to listen on         (default: from config.yaml vllm_server.port, else 6001)
+#   --model/-m  PATH   Model path                (default: from config.yaml model.local_model_path)
+#   --gpu/-g    IDS    CUDA_VISIBLE_DEVICES      (default: 0)
+#   --tp        N      tensor-parallel-size      (default: 1)
 #   --timeout   SECS   Startup wait timeout      (default: 600, foreground only)
-#   --max-model-len N  Max sequence length       (default: from config.yaml judge.max_model_len)
-#   --gpu-mem-util  F  GPU memory utilization    (default: from config.yaml judge.gpu_memory_utilization)
+#   --max-model-len N  Max sequence length       (default: from config.yaml model.max_model_len)
+#   --gpu-mem-util  F  GPU memory utilization    (default: from config.yaml model.gpu_memory_utilization)
 #   --extra     "ARGS" Extra args passed to vllm (optional)
 #   -d                 Detach: run in background, return immediately
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.yaml"
-PID_FILE="$SCRIPT_DIR/judge_vllm.pid"
-LOG_FILE="$SCRIPT_DIR/logs/start_judge_vllm_$(date +%Y%m%d_%H%M%S).log"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+CONFIG_FILE="$PROJECT_ROOT/config.yaml"
+PID_FILE="$PROJECT_ROOT/vllm.pid"
+LOG_FILE="$PROJECT_ROOT/logs/start_vllm_$(date +%Y%m%d_%H%M%S).log"
 
 # ── Stop / logs shortcuts ──────────────────────────────────────────────────────
-mkdir -p "$SCRIPT_DIR/logs"
+mkdir -p "$PROJECT_ROOT/logs"
 
 if [[ "${1:-}" == "--stop" ]]; then
     if [ -f "$PID_FILE" ]; then
@@ -33,19 +34,19 @@ if [[ "${1:-}" == "--stop" ]]; then
         if kill -0 "$PID" 2>/dev/null; then
             kill "$PID"
             rm -f "$PID_FILE"
-            echo "Judge vLLM server (PID $PID) stopped."
+            echo "vLLM server (PID $PID) stopped."
         else
             echo "No running process found for PID $PID. Removing stale PID file."
             rm -f "$PID_FILE"
         fi
     else
-        echo "No PID file found. Is the judge server running?"
+        echo "No PID file found. Is the server running?"
     fi
     exit 0
 fi
 
 if [[ "${1:-}" == "--logs" ]]; then
-    LATEST_LOG=$(ls -t "$SCRIPT_DIR"/logs/start_judge_vllm_*.log 2>/dev/null | head -1)
+    LATEST_LOG=$(ls -t "$PROJECT_ROOT"/logs/start_vllm_*.log 2>/dev/null | head -1)
     [ -z "$LATEST_LOG" ] && echo "No log files found." && exit 1
     echo "Tailing: $LATEST_LOG"
     tail -f "$LATEST_LOG"
@@ -53,10 +54,10 @@ if [[ "${1:-}" == "--logs" ]]; then
 fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-PORT="6002"
+PORT=""
 MODEL_PATH=""
-GPU="0,1"
-TP=2
+GPU="0"
+TP=1
 TIMEOUT=600
 EXTRA_ARGS=""
 MAX_MODEL_LEN=""
@@ -81,12 +82,20 @@ done
 
 # ── Read defaults from config.yaml ────────────────────────────────────────────
 if [ -f "$CONFIG_FILE" ]; then
+    if [ -z "$PORT" ]; then
+        PORT=$(python3 -c "
+import yaml
+with open('$CONFIG_FILE') as f:
+    cfg = yaml.safe_load(f)
+print(cfg.get('vllm_server', {}).get('port', 6001))
+" 2>/dev/null || echo "6001")
+    fi
     if [ -z "$MODEL_PATH" ]; then
         MODEL_PATH=$(python3 -c "
 import yaml
 with open('$CONFIG_FILE') as f:
     cfg = yaml.safe_load(f)
-print(cfg.get('judge', {}).get('model_path', ''))
+print(cfg.get('model', {}).get('local_model_path', ''))
 " 2>/dev/null || echo "")
     fi
     if [ -z "$MAX_MODEL_LEN" ]; then
@@ -94,7 +103,7 @@ print(cfg.get('judge', {}).get('model_path', ''))
 import yaml
 with open('$CONFIG_FILE') as f:
     cfg = yaml.safe_load(f)
-v = cfg.get('judge', {}).get('max_model_len', '')
+v = cfg.get('model', {}).get('max_model_len', '')
 print(v if v else '')
 " 2>/dev/null || echo "")
     fi
@@ -103,16 +112,17 @@ print(v if v else '')
 import yaml
 with open('$CONFIG_FILE') as f:
     cfg = yaml.safe_load(f)
-v = cfg.get('judge', {}).get('gpu_memory_utilization', '')
+v = cfg.get('model', {}).get('gpu_memory_utilization', '')
 print(v if v else '')
 " 2>/dev/null || echo "")
     fi
 else
     echo "Warning: config.yaml not found at $CONFIG_FILE"
+    PORT="${PORT:-6001}"
 fi
 
 if [ -z "$MODEL_PATH" ]; then
-    echo "Error: judge model path not set. Use --model/-m or set judge.model_path in config.yaml"
+    echo "Error: model path not set. Use --model/-m or set model.local_model_path in config.yaml"
     exit 1
 fi
 
@@ -120,7 +130,7 @@ fi
 if $DETACH && [ -f "$PID_FILE" ]; then
     OLD_PID=$(cat "$PID_FILE")
     if kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "Judge vLLM is already running (PID $OLD_PID). Use --stop to stop it first."
+        echo "vLLM is already running (PID $OLD_PID). Use --stop to stop it first."
         exit 1
     else
         rm -f "$PID_FILE"
@@ -129,7 +139,6 @@ fi
 
 # ── Print config ───────────────────────────────────────────────────────────────
 echo "============================================================"
-echo "  [Judge Server]"
 echo "  Model   : $MODEL_PATH"
 echo "  GPU(s)  : $GPU"
 echo "  Port    : $PORT"
@@ -156,14 +165,14 @@ if $DETACH; then
     CUDA_VISIBLE_DEVICES="$GPU" nohup "${VLLM_CMD[@]}" > "$LOG_FILE" 2>&1 &
     VLLM_PID=$!
     echo "$VLLM_PID" > "$PID_FILE"
-    echo "Judge vLLM started in background (PID $VLLM_PID)"
+    echo "vLLM started in background (PID $VLLM_PID)"
     echo ""
-    echo "  Stop : bash start_judge_vllm.sh --stop"
-    echo "  Logs : bash start_judge_vllm.sh --logs"
+    echo "  Stop : bash commands/start_vllm.sh --stop"
+    echo "  Logs : bash commands/start_vllm.sh --logs"
 else
-    echo "Starting judge vLLM server (Ctrl+C to stop)..."
+    echo "Starting vLLM server (Ctrl+C to stop)..."
     START_TIME=$(date +%s)
-    SPIN=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    SPIN=('⠋' '⠙' '⠹' '⠸' '⼼' '⠴' '⠦' '⠧' '⠇' '⠏')
     SPIN_IDX=0
 
     CUDA_VISIBLE_DEVICES="$GPU" "${VLLM_CMD[@]}" &
@@ -172,21 +181,21 @@ else
     while true; do
         if curl -s -f "http://localhost:${PORT}/v1/models" > /dev/null 2>&1; then
             echo ""
-            echo "Judge vLLM server is ready on port $PORT! (Ctrl+C to stop)"
+            echo "vLLM server is ready on port $PORT! (Ctrl+C to stop)"
             wait "$VLLM_PID"
             break
         fi
 
         if ! kill -0 "$VLLM_PID" 2>/dev/null; then
             echo ""
-            echo "Error: Judge vLLM process exited unexpectedly."
+            echo "Error: vLLM process exited unexpectedly."
             exit 1
         fi
 
         ELAPSED=$(( $(date +%s) - START_TIME ))
         if [ "$ELAPSED" -gt "$TIMEOUT" ]; then
             echo ""
-            echo "Error: Judge server did not become ready within ${TIMEOUT}s."
+            echo "Error: Server did not become ready within ${TIMEOUT}s."
             kill "$VLLM_PID" 2>/dev/null || true
             exit 1
         fi

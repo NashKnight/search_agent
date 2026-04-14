@@ -3,7 +3,7 @@ Inference script — runs the search agent over a JSONL benchmark and saves raw 
 
 Does NOT compute metrics. Pass the output to eval.py for scoring.
 
-Requires a running vLLM server (start with: bash start_vllm.sh -p PORT)
+Requires a running vLLM server (start with: bash commands/start_vllm.sh -p PORT)
 
 Usage
 -----

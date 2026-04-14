@@ -9,9 +9,10 @@
 ```
 search_agent/
 ├── config.yaml               # 全局配置（模型路径、vLLM server 端口、API Key、限制参数、裁判配置等）
-├── start_vllm.sh             # 启动推理 vLLM server（端口 6001，单卡）
-├── start_judge_vllm.sh       # 启动裁判 vLLM server（端口 6002，双卡 TP=2）
-├── __init__.py
+│
+├── commands/
+│   ├── start_vllm.sh         # 启动推理 vLLM server（端口 6001，单卡）
+│   └── start_judge_vllm.sh   # 启动裁判 vLLM server（端口 6002，双卡 TP=2）
 │
 ├── utils/
 │   ├── config_loader.py      # load_config() — 读取 config.yaml 返回 dict
@@ -35,10 +36,13 @@ search_agent/
 │
 ├── search_workflow.py        # SearchWorkflow — 核心推理循环（多轮搜索 + Dynamic Memory）
 ├── infer.py                  # 主推理脚本：调用 SearchWorkflow，并发处理 benchmark
-├── infer_react.py            # 基线推理：Vanilla ReAct（Thought/Action/Observation 循环）
-├── infer_base.py             # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
-├── infer_webdancer.py        # 基线推理：WebDancer 兼容（Serper 搜索 + Jina Reader）
 ├── eval.py                   # 评分脚本：调用裁判模型，计算 accuracy
+│
+├── baselines/
+│   ├── infer_react.py        # 基线推理：Vanilla ReAct（Thought/Action/Observation 循环）
+│   ├── infer_base.py         # 基线推理：纯 LLM 直接问答 / 单跳 Jina 搜索（--jina）
+│   └── infer_webdancer.py    # 基线推理：WebDancer 兼容（Serper 搜索 + Jina Reader）
+│
 └── tests/
     ├── smoke_test.jsonl      # 冒烟测试用例（6 条，无标准答案，用于快速验证流程）
     └── run_<时间戳>.jsonl    # infer.py 输出的预测结果
@@ -51,8 +55,8 @@ search_agent/
 | 组件 | 职责 |
 |---|---|
 | `config.yaml` | 统一配置入口：模型路径、vLLM server 端口、Jina API Key、代理、Token 限制、裁判 API |
-| `start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`/`-p`、`--gpu`、`--tp` 等参数 |
-| `start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
+| `commands/start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`/`-p`、`--gpu`、`--tp` 等参数 |
+| `commands/start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
 | `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
 | `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
 | `models/vllm_server_model.py` | `VLLMServerModel` — 通过 HTTP API 连接 vLLM server（多线程推荐） |
@@ -61,9 +65,9 @@ search_agent/
 | `agent/prompts.py` | 所有 prompt 模板集中管理（中文） |
 | `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + Dynamic Memory 更新 |
 | `infer.py` | 主推理脚本：并发处理 benchmark，每题跑 N 次 rollout，eval.py 报 Pass@N |
-| `infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
-| `infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
-| `infer_webdancer.py` | 基线：WebDancer 兼容推理（Serper 搜索 + Jina Reader 访问页面），输出与 eval.py 对齐 |
+| `baselines/infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
+| `baselines/infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
+| `baselines/infer_webdancer.py` | 基线：WebDancer 兼容推理（Serper 搜索 + Jina Reader 访问页面），输出与 eval.py 对齐 |
 | `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
 | `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
 
@@ -191,10 +195,10 @@ Current queue: query_1, query_2, ...
 
 | 模式 | 脚本 | 搜索 | 结构化记忆 | 多跳规划 | Context 控制 |
 |---|---|---|---|---|---|
-| 纯 LLM | `infer_base.py` | ✗ | ✗ | ✗ | — |
-| 单跳搜索 | `infer_base.py --jina` | 1 次 | ✗ | ✗ | — |
-| Vanilla ReAct | `infer_react.py` | 多轮 | ✗ | ✗ | 全历史累积 |
-| WebDancer | `infer_webdancer.py` | 多轮 | ✗ | ✗ | 全历史累积 |
+| 纯 LLM | `baselines/infer_base.py` | ✗ | ✗ | ✗ | — |
+| 单跳搜索 | `baselines/infer_base.py --jina` | 1 次 | ✗ | ✗ | — |
+| Vanilla ReAct | `baselines/infer_react.py` | 多轮 | ✗ | ✗ | 全历史累积 |
+| WebDancer | `baselines/infer_webdancer.py` | 多轮 | ✗ | ✗ | 全历史累积 |
 | **Search Agent (Ours)** | `infer.py` | 多轮 | ✓ | ✓ | Dynamic Memory（受控） |
 
 ---
@@ -209,13 +213,13 @@ Current queue: query_1, query_2, ...
 
 ```bash
 # 单卡，端口 6001
-bash start_vllm.sh --gpu 0
+bash commands/start_vllm.sh --gpu 0
 
 # 指定端口和模型路径
-bash start_vllm.sh --port 6001 --gpu 0 --model /root/autodl-tmp/Qwen3-8B
+bash commands/start_vllm.sh --port 6001 --gpu 0 --model /root/autodl-tmp/Qwen3-8B
 
 # 后台运行
-nohup bash start_vllm.sh --port 6001 --gpu 0 > vllm_6001.log 2>&1 &
+bash commands/start_vllm.sh --port 6001 --gpu 0 -d
 ```
 
 ---
@@ -263,31 +267,31 @@ python infer.py \
   --output tests/hotpot_run.jsonl
 ```
 
-#### 基线 A（infer_react.py）—— Vanilla ReAct
+#### 基线 A（baselines/infer_react.py）—— Vanilla ReAct
 
 ```bash
-python infer_react.py --port 6001 --onetime
-python infer_react.py --port 6001 --onetime --benchmark hotpot
-python infer_react.py --port 6001 --workers 4 --max-rounds 10
+python baselines/infer_react.py --port 6001 --onetime
+python baselines/infer_react.py --port 6001 --onetime --benchmark hotpot
+python baselines/infer_react.py --port 6001 --workers 4 --max-rounds 10
 ```
 
-#### 基线 B（infer_base.py）—— 直接问答 / 单跳搜索
+#### 基线 B（baselines/infer_base.py）—— 直接问答 / 单跳搜索
 
 ```bash
 # 纯 LLM（无搜索）
-python infer_base.py --port 6001 --onetime
+python baselines/infer_base.py --port 6001 --onetime
 
 # 单跳 Jina 搜索
-python infer_base.py --port 6001 --onetime --jina
+python baselines/infer_base.py --port 6001 --onetime --jina
 ```
 
-#### 基线 C（infer_webdancer.py）—— WebDancer
+#### 基线 C（baselines/infer_webdancer.py）—— WebDancer
 
 ```bash
 # 需要在 config.yaml 中配置 webdancer.serper_api_key
-python infer_webdancer.py --port 6001 --onetime
-python infer_webdancer.py --port 6001 --workers 8 --limit 20
-python infer_webdancer.py --port 6001 --benchmark hotpot --onetime
+python baselines/infer_webdancer.py --port 6001 --onetime
+python baselines/infer_webdancer.py --port 6001 --workers 8 --limit 20
+python baselines/infer_webdancer.py --port 6001 --benchmark hotpot --onetime
 ```
 
 ---
@@ -296,7 +300,7 @@ python infer_webdancer.py --port 6001 --benchmark hotpot --onetime
 
 ```bash
 # 1. 启动裁判 vLLM（双卡，端口 6002）
-bash start_judge_vllm.sh -d
+bash commands/start_judge_vllm.sh -d
 
 # 2. 评分
 python eval.py --input tests/run_20240101_120000.jsonl
@@ -360,4 +364,4 @@ Difficulty:
 
 ### 更换裁判模型
 
-修改 `config.yaml` 的 `judge` 块，重启 `start_judge_vllm.sh`，无需改代码。
+修改 `config.yaml` 的 `judge` 块，重启 `commands/start_judge_vllm.sh`，无需改代码。

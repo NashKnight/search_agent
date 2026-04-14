@@ -370,7 +370,7 @@ def main() -> None:
     if args.max_rounds is not None:
         config.setdefault("limits", {})["max_rounds"] = args.max_rounds
 
-    project_root = Path(__file__).parent.parent
+    project_root = Path(__file__).resolve().parent.parent
     if args.benchmark == "hotpot":
         benchmark_path = Path(config["eval"]["hotpot_benchmark_path"])
     elif args.benchmark and args.benchmark != "webwalker":
