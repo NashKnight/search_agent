@@ -65,10 +65,10 @@ search_agent/
 | `agent/prompts.py` | 所有 prompt 模板集中管理（中文） |
 | `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + Dynamic Memory 更新 |
 | `infer.py` | 主推理脚本：并发处理 benchmark，每题跑 N 次 rollout，eval.py 报 Pass@N |
-| `baselines/infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
-| `baselines/infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
-| `baselines/infer_webdancer.py` | 基线：WebDancer 兼容推理（Serper 搜索 + Jina Reader 访问页面），输出与 eval.py 对齐 |
 | `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
+| `baselines/infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
+| `baselines/infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
+| `baselines/infer_webdancer.py` | 基线：WebDancer 兼容推理（Serper 搜索 + Jina Reader 访问页面），输出与 eval.py 对齐 |
 | `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
 
 ---
@@ -132,40 +132,34 @@ judge:
 问题 q
 │
 ├─ Round 1: Initial Analysis
-│     [Req 1] Initial Analysis → 提取 <search> 查询列表
-│     → 若无搜索需求（Need Search? No）：Final Round: [Req 1] Generate Answer，结束
-│     → [Req 2] Bootstrap — MemoryManager.initialize() 创建 Dynamic Memory：
+│     [Req 1.1] Initial Analysis → 提取 <search> 查询列表
+│     → 若无搜索需求（Need Search? No）：进入 Final Round，结束
+│     → [Req 1.2] Bootstrap — MemoryManager.initialize() 创建 Dynamic Memory：
 │           [Global Query]        ← 根据问题生成研究目标
 │           [Task Plan]           ← 生成分步计划
 │           [History Information] ← 初始为空
 │           [Pending Queue]       ← 填入本轮提取的查询
-│     → 过滤初始队列（只影响 search_queue，不更新 Dynamic Memory）
+│     → 进入 Round 2
 │
-├─ Round 2+: Search Loop（每轮 3~4 次 LLM 调用）
-│   LOOP: [Pending Queue] 非空 且 round ≤ max_rounds（Queue Empty OR Max Rounds?）
-│   │
+├─ Round 2+: Search Loop（每轮 3 次 LLM 调用）
+│   LOOP: Queue Empty OR Max Rounds?
+│   │     Yes → 进入 Final Round
+│   │     No  ↓
 │   ├─ 从 [Pending Queue] 弹出 current_query
-│   ├─ [Req 1] Relevance Check（FILTER_QUERIES_PROMPT）
-│   │     → Relevant? No：跳过，Dynamic Memory 不更新
+│   ├─ [Req 2.1] Relevance Check
+│   │     → Relevant? No：跳过，回到循环顶部
 │   ├─ [Tool Call] Jina Search → sources
-│   ├─ Analysis（ANALYSIS_PROMPT）
-│   │     输入：Dynamic Memory + 搜索结果
-│   │     输出：分析结论 + 可选新 <search> 查询
-│   │     → 若队列已空且无新查询：直接返回本轮答案（进入 Final Round）
-│   ├─ [Req 2] Memory Update（pass 1 — temp）：
+│   ├─ [Req 2.2] Memory Update
 │   │     [History Information] += {Query: current_query, Response: 关键事实}
-│   │     [Pending Queue]       = remaining_queue + new_queries（未过滤）
-│   ├─ [Req 3] Queue Filtering（FILTER_QUERIES_PROMPT）
-│   │     输入：temp Dynamic Memory + 全部候选查询
-│   │     输出：保留 / 移除决策
-│   └─ [Req 2] Memory Update（pass 2 — final）：
-│         [History Information] ← 保持 pass 1 结果不变
-│         [Pending Queue]       = 过滤后的队列
-│         [Global Query] / [Task Plan] ← 始终不变
+│   │     [Pending Queue]       = remaining_queue + new_queries
+│   └─ [Req 2.3] Queue Filtering
+│         输入：Dynamic Memory + 全部候选查询
+│         输出：过滤后写回 [Pending Queue]（R/W Dynamic Memory）
+│         → 回到循环顶部
 │
 └─ Final Round（1 次 LLM 调用）
-      触发条件：max_rounds 耗尽（正常收敛时在 Search Loop 内直接返回）
-      [Req 1] Generate Answer（FINAL_ANSWER_PROMPT）
+      触发条件：Queue Empty 或 Max Rounds 耗尽
+      [Req 3.1] Generate Answer
             输入：完整 Dynamic Memory（含全部 [History Information]）+ 原始问题
             输出：最终答案
 ```
@@ -267,15 +261,7 @@ python infer.py \
   --output tests/hotpot_run.jsonl
 ```
 
-#### 基线 A（baselines/infer_react.py）—— Vanilla ReAct
-
-```bash
-python baselines/infer_react.py --port 6001 --onetime
-python baselines/infer_react.py --port 6001 --onetime --benchmark hotpot
-python baselines/infer_react.py --port 6001 --workers 4 --max-rounds 10
-```
-
-#### 基线 B（baselines/infer_base.py）—— 直接问答 / 单跳搜索
+#### 基线 A（baselines/infer_base.py）—— 直接问答 / 单跳搜索
 
 ```bash
 # 纯 LLM（无搜索）
@@ -283,6 +269,14 @@ python baselines/infer_base.py --port 6001 --onetime
 
 # 单跳 Jina 搜索
 python baselines/infer_base.py --port 6001 --onetime --jina
+```
+
+#### 基线 B（baselines/infer_react.py）—— Vanilla ReAct
+
+```bash
+python baselines/infer_react.py --port 6001 --onetime
+python baselines/infer_react.py --port 6001 --onetime --benchmark hotpot
+python baselines/infer_react.py --port 6001 --workers 4 --max-rounds 10
 ```
 
 #### 基线 C（baselines/infer_webdancer.py）—— WebDancer
