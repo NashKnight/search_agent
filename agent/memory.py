@@ -31,7 +31,7 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     def initialize(self, user_query: str, pending_queries: list[str]) -> str:
-        """[Req 2] Bootstrap — create an empty Dynamic Memory for a new search session."""
+        """[Req 1.2] Bootstrap — create an empty Dynamic Memory for a new search session."""
         prompt = MEMORY_INIT_PROMPT.format(
             user_query=user_query,
             pending_queries=", ".join(pending_queries) if pending_queries else "none",
@@ -46,7 +46,7 @@ class MemoryManager:
         pending_queue: list[str],
         last_search_relevant: bool = True,
     ) -> str:
-        """[Req 2] Memory Update — update the Dynamic Memory after a search round.
+        """[Req 2.2] Memory Update — update the Dynamic Memory after a search round.
 
         Args:
             search_history: All search records so far, each ``{"query": str, "results": str}``.

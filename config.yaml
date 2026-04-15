@@ -10,7 +10,7 @@ vllm_server:
   port: 6001
 
 search:
-  jina_api_key: "jina_0b176e0ef4a3454089437642b39f9ae4RrgqclsERtYC9fe2UbMXHn67Noip"
+  jina_api_key: "jina_xxxxxxxxxxxxxxxxxxxx"
   jina_endpoint: "https://s.jina.ai"
   proxies:
     http: "http://127.0.0.1:7890"

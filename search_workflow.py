@@ -4,8 +4,8 @@ through the multi-round search + memory loop.
 
 Architecture
 ------------
-Round 1        : Initial Analysis → [Req 2] Bootstrap (init Dynamic Memory + filter queue)
-Round 2+       : Search Loop — [Req 1] Relevance Check → Jina Search → [Req 2] Memory Update → [Req 3] Queue Filtering
+Round 1        : Initial Analysis → [Req 1.2] Bootstrap (init Dynamic Memory + filter queue)
+Round 2+       : Search Loop — [Req 2.1] Relevance Check → Jina Search → [Req 2.2] Memory Update → [Req 2.3] Queue Filtering
 Final Round    : Generate Answer (triggered when queue empties or max_rounds hit)
 """
 
@@ -184,7 +184,7 @@ class SearchWorkflow:
                 "rounds": rounds,
             }
         memory = memory_mgr.initialize(clean_query, buffer)
-        log(f"\n[Req 2 Bootstrap — Dynamic Memory initialized]\n{memory}\n")
+        log(f"\n[Req 1.2 Bootstrap — Dynamic Memory initialized]\n{memory}\n")
 
         filtered = _filter_queries(self._llm, memory, buffer)
         log(f"[Filtered queries] {filtered}")
@@ -284,7 +284,7 @@ class SearchWorkflow:
             new_queries = _extract_search_queries(raw)
             log(f"[New queries extracted] {new_queries}")
 
-            # [Req 3] Queue Filtering — merge queue + new queries, re-filter everything
+            # [Req 2.3] Queue Filtering — merge queue + new queries, re-filter everything
             all_pending = list(search_queue) + new_queries
             # Temporarily update memory to help the filter judge new queries
             temp_memory = memory_mgr.update(
