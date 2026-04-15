@@ -54,22 +54,22 @@ search_agent/
 
 | 组件 | 职责 |
 |---|---|
-| `config.yaml` | 统一配置入口：模型路径、vLLM server 端口、Jina API Key、代理、Token 限制、裁判 API |
-| `commands/start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`/`-p`、`--gpu`、`--tp` 等参数 |
-| `commands/start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
-| `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
-| `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
-| `models/vllm_server_model.py` | `VLLMServerModel` — 通过 HTTP API 连接 vLLM server（多线程推荐） |
-| `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理 |
 | `agent/memory.py` | `MemoryManager` — 初始化与更新 Dynamic Memory（Global Query / Task Plan / History Information / Pending Queue） |
 | `agent/prompts.py` | 所有 prompt 模板集中管理（中文） |
-| `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + Dynamic Memory 更新 |
-| `infer.py` | 主推理脚本：并发处理 benchmark，每题跑 N 次 rollout，eval.py 报 Pass@N |
-| `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
 | `baselines/infer_base.py` | 基线：无搜索直接问答（default）/ 单跳 Jina 搜索（`--jina`） |
 | `baselines/infer_react.py` | 基线：Vanilla ReAct，Thought/Action/Observation 循环，仅 Search/Finish |
 | `baselines/infer_webdancer.py` | 基线：WebDancer 兼容推理（Serper 搜索 + Jina Reader 访问页面），输出与 eval.py 对齐 |
+| `commands/start_judge_vllm.sh` | 启动裁判 vLLM server（端口 6002，默认双卡 TP=2），读取 `judge.model_path` |
+| `commands/start_vllm.sh` | 启动推理 vLLM server（端口 6001），支持 `--port`/`-p`、`--gpu`、`--tp` 等参数 |
+| `config.yaml` | 统一配置入口：模型路径、vLLM server 端口、Jina API Key、代理、Token 限制、裁判 API |
+| `eval.py` | 评分入口：读取预测 JSONL，逐条调用裁判模型，输出 accuracy |
+| `infer.py` | 主推理脚本：并发处理 benchmark，每题跑 N 次 rollout，eval.py 报 Pass@N |
+| `models/base.py` | `BaseLLM` 抽象类 — 定义 `generate()` 和 `clear_cache()` 接口 |
+| `models/vllm_server_model.py` | `VLLMServerModel` — 通过 HTTP API 连接 vLLM server（多线程推荐） |
+| `search/jina_search.py` | `JinaSearch` — 调用 Jina Search API，解析 JSON，支持代理 |
+| `search_workflow.py` | `SearchWorkflow` — 核心推理循环，orchestrates 多轮搜索 + Dynamic Memory 更新 |
 | `tests/smoke_test.jsonl` | 6 条冒烟测试用例，用于快速验证模型能否正常运行 |
+| `utils/config_loader.py` | `load_config(path?)` — 加载 YAML，返回 dict |
 
 ---
 
